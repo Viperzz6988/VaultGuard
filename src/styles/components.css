@@ -36,6 +36,17 @@
   box-shadow: var(--shadow-card);
 }
 
+.primary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled,
+.ghost-inline-button:disabled,
+.ghost-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+  box-shadow: none;
+}
+
 .ghost-button,
 .ghost-inline-button,
 .ghost-icon-button {
@@ -61,6 +72,14 @@
 .settings-accordion-toggle:hover,
 .segmented-control button:hover {
   transform: translateY(-1px);
+}
+
+.primary-button:disabled:hover,
+.ghost-button:disabled:hover,
+.danger-button:disabled:hover,
+.ghost-inline-button:disabled:hover,
+.ghost-icon-button:disabled:hover {
+  transform: none;
 }
 
 .primary-button:hover {

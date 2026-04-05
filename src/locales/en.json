@@ -64,6 +64,28 @@
     "createVault": "Create vault",
     "passwordHint": "Use a long passphrase with mixed words, symbols, and numbers.",
     "createdSuccess": "Vault created successfully.",
+    "requirements": {
+      "length": "At least 15 characters",
+      "uppercase": "One uppercase letter",
+      "lowercase": "One lowercase letter",
+      "number": "One number",
+      "special": "One special character"
+    },
+    "confirmationWarningTitle": "Before you continue",
+    "confirmationWarningBody": "Your master password is the only key to your vault. VaultGuard does not store it anywhere.",
+    "confirmationWarningLoss1": "Your vault cannot be recovered",
+    "confirmationWarningLoss2": "Your passwords are permanently lost",
+    "confirmationWarningLoss3": "There is no reset, no support, and no backdoor",
+    "confirmationWarningFooter": "Write it down somewhere safe before continuing.",
+    "confirmationWarningAction": "I understand",
+    "confirmationReadyTitle": "Are you sure?",
+    "confirmationReadyCheckbox": "I have saved my master password and understand it cannot be recovered if lost.",
+    "integrityTitle": "Enable File Protection?",
+    "integrityBody": "VaultGuard can monitor its own files for unexpected changes. If any protected file is modified outside the app, VaultGuard will refuse to start until it is verified.",
+    "integrityRecommendation": "Recommended for maximum security.",
+    "integritySkip": "Skip",
+    "integrityEnable": "Enable Protection",
+    "confirmationReadyAction": "Yes, I'm ready",
     "warningLead": "Remember this password. It is ",
     "warningNeverStored": "never stored",
     "warningMiddle": " and ",
@@ -178,6 +200,11 @@
     "useThisPassword": "Use this password",
     "copyGenerated": "Copy generated secret"
   },
+  "security": {
+    "integrityAlertTitle": "Security Alert",
+    "integrityAlertBody": "VaultGuard files were modified since your last session.",
+    "integrityAlertExit": "Exit"
+  },
   "settings": {
     "title": "Settings",
     "generalTitle": "General",
@@ -250,6 +277,7 @@
   },
   "export": {
     "title": "Export vault",
+    "reauthDescription": "Enter your master password to confirm this export before the save dialog opens.",
     "encryptedJsonDescription": "Encrypted JSON package containing the opaque VaultGuard vault blob.",
     "bitwardenDescription": "Portable Bitwarden-style JSON export for migration into compatible tools.",
     "keepassDescription": "Plaintext KeePass XML. Use only in a trusted environment.",

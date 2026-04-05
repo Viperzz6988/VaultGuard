@@ -5,6 +5,7 @@ import {
   emptyEntryDraft,
   normalizeGeneratorState
 } from "/scripts/generator.js";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { formatDateTime, getLanguage, initI18n, setLanguage, t } from "/scripts/i18n.js";
 import { collectTags, filterEntries } from "/scripts/search.js";
 import {
@@ -39,6 +40,19 @@ const CLIPBOARD_POPUP_MARGIN_PX = 16;
 const CLIPBOARD_POPUP_OFFSET_PX = 12;
 const CLIPBOARD_POPUP_FALLBACK_Y_PX = 96;
 const CLIPBOARD_POPUP_MAX_TOP_PX = 170;
+const IMPORT_FILE_EXTENSIONS = Object.freeze({
+  bitwarden: ["json"],
+  keepass: ["xml"],
+  "1password": ["csv"],
+  lastpass: ["csv"],
+  dashlane: ["csv"],
+  generic: ["csv"]
+});
+const EXPORT_FILE_EXTENSIONS = Object.freeze({
+  encrypted: ["vg"],
+  keepass: ["xml"],
+  bitwarden: ["json"]
+});
 let introPlayed = false;
 
 const state = {
@@ -71,7 +85,9 @@ const state = {
     postLoginLoading: false,
     startupIntro: {
       active: false
-    }
+    },
+    fileProtectionSupported: false,
+    startupIntegrityAlert: null
   },
   toasts: [],
   forms: {
@@ -81,6 +97,10 @@ const state = {
       showPassword: false,
       showConfirmPassword: false,
       strength: null
+    },
+    setupConfirmation: {
+      stage: null,
+      readyChecked: false
     },
     unlock: {
       password: "",
@@ -122,14 +142,18 @@ const state = {
     import: {
       open: false,
       type: "bitwarden",
-      password: "",
+      filePath: "",
       fileName: "",
-      content: "",
       preview: null
     },
     export: {
       open: false,
       password: ""
+    },
+    masterPasswordPrompt: {
+      open: false,
+      password: "",
+      resumeSettingsSection: "data"
     },
     changePassword: {
       open: false,
@@ -162,6 +186,7 @@ let startupRunId = 0;
 let dragEntryState = null;
 let activeDropCategoryButton = null;
 let activeDropCard = null;
+let masterPasswordPromptResolver = null;
 
 const strengthDebouncers = new Map();
 
@@ -230,6 +255,14 @@ async function bindTauriListeners() {
 
 async function bootstrap() {
   try {
+    const integrityStatus = await vaultApi.getStartupIntegrityStatus();
+    state.ui.fileProtectionSupported = Boolean(integrityStatus.supported);
+    state.ui.startupIntegrityAlert = integrityStatus.blocked ? integrityStatus.message : null;
+
+    if (integrityStatus.blocked) {
+      return;
+    }
+
     state.vaultExists = await vaultApi.checkVaultExists();
     state.bruteForceStatus = state.vaultExists ? await vaultApi.getBruteForceStatus() : null;
     syncLockoutTicker();
@@ -245,7 +278,8 @@ async function bootstrap() {
     toast(error.message, "error");
   } finally {
     state.ready = true;
-    state.ui.startupIntro.active = !introPlayed && !state.unlocked;
+    state.ui.startupIntro.active =
+      !introPlayed && !state.unlocked && !state.ui.startupIntegrityAlert;
     render();
     startStartupIntro();
   }
@@ -971,7 +1005,7 @@ async function handleClick(event) {
       patchSettingsAccordion();
       break;
     case "choose-import-file-trigger":
-      root.querySelector("#import-file-input")?.click();
+      await chooseImportFile();
       break;
     case "toggle-setup-password":
       state.forms.setup.showPassword = !state.forms.setup.showPassword;
@@ -980,6 +1014,36 @@ async function handleClick(event) {
     case "toggle-setup-confirm-password":
       state.forms.setup.showConfirmPassword = !state.forms.setup.showConfirmPassword;
       render();
+      break;
+    case "acknowledge-master-password-warning":
+      state.forms.setupConfirmation.stage = "confirm";
+      render();
+      break;
+    case "cancel-master-password-confirmation":
+      state.forms.setupConfirmation.stage = "warning";
+      state.forms.setupConfirmation.readyChecked = false;
+      render();
+      break;
+    case "finish-master-password-confirmation":
+      if (!state.forms.setupConfirmation.readyChecked) {
+        return;
+      }
+      if (state.ui.fileProtectionSupported) {
+        state.forms.setupConfirmation.stage = "integrity";
+        render();
+        return;
+      }
+      state.forms.setupConfirmation = emptySetupConfirmationForm();
+      await showPostLoginLoading(() => loadVaultData({ skipRender: true }));
+      break;
+    case "skip-integrity-protection":
+      await finalizeFileProtectionChoice(false);
+      break;
+    case "enable-integrity-protection":
+      await finalizeFileProtectionChoice(true);
+      break;
+    case "exit-app":
+      await vaultApi.quitApp();
       break;
     case "toggle-unlock-password":
       state.forms.unlock.showPassword = !state.forms.unlock.showPassword;
@@ -1075,6 +1139,9 @@ async function handleSubmit(event) {
     case "change-password":
       await submitChangePassword();
       break;
+    case "master-password-prompt":
+      submitMasterPasswordPrompt();
+      break;
     default:
       break;
   }
@@ -1137,23 +1204,6 @@ async function handleChange(event) {
       return;
     }
     return;
-  }
-
-  if (event.target.dataset.action === "choose-import-file") {
-    const [file] = event.target.files || [];
-    if (!file) {
-      return;
-    }
-
-    try {
-      const content = await file.text();
-      state.forms.import.fileName = file.name;
-      state.forms.import.content = content;
-      state.forms.import.preview = previewImport(state.forms.import.type, file.name, content);
-      render();
-    } catch (error) {
-      toast(error.message, "error");
-    }
   }
 }
 
@@ -1346,7 +1396,11 @@ async function submitSetup() {
     state.bruteForceStatus = response.brute_force_status;
     toast(t("setup.createdSuccess"));
     resetSetupForm();
-    await showPostLoginLoading(() => loadVaultData({ skipRender: true }));
+    state.forms.setupConfirmation = {
+      stage: "warning",
+      readyChecked: false
+    };
+    render();
   });
 }
 
@@ -1476,6 +1530,9 @@ function updateModel(path, value) {
     case "setup.confirmPassword":
       state.forms.setup.confirmPassword = value;
       break;
+    case "setupConfirmation.readyChecked":
+      state.forms.setupConfirmation.readyChecked = Boolean(value);
+      break;
     case "unlock.password":
       state.forms.unlock.password = value;
       break;
@@ -1556,26 +1613,13 @@ function updateModel(path, value) {
     }
     case "import.type":
       state.forms.import.type = value;
-      if (state.forms.import.content) {
-        try {
-          state.forms.import.preview = previewImport(
-            state.forms.import.type,
-            state.forms.import.fileName,
-            state.forms.import.content
-          );
-        } catch (error) {
-          state.forms.import.preview = null;
-          toast(error.message, "error");
-        }
-      } else {
-        state.forms.import.preview = null;
+      if (state.forms.import.fileName) {
+        state.forms.import.filePath = "";
+        state.forms.import.fileName = "";
       }
       break;
-    case "import.password":
-      state.forms.import.password = value;
-      break;
-    case "export.password":
-      state.forms.export.password = value;
+    case "masterPasswordPrompt.password":
+      state.forms.masterPasswordPrompt.password = value;
       break;
     case "changePassword.currentPassword":
       state.forms.changePassword.currentPassword = value;
@@ -1704,73 +1748,138 @@ async function loadVaultData(options = {}) {
 }
 
 async function executeImport() {
-  if (!state.forms.import.content) {
+  if (!state.forms.import.filePath) {
     toast(t("validation.fileRequired"), "error");
-    return;
-  }
-  if (!state.forms.import.password) {
-    toast(t("validation.masterPasswordRequired"), "error");
     return;
   }
 
   await withHandledError(async () => {
-    let count = 0;
-    switch (state.forms.import.type) {
-      case "bitwarden":
-        count = await vaultApi.importBitwardenJson(
-          state.forms.import.password,
-          state.forms.import.content
-        );
-        break;
-      case "keepass":
-        count = await vaultApi.importKeepassXml(
-          state.forms.import.password,
-          state.forms.import.content
-        );
-        break;
-      default:
-        count = await vaultApi.importCsv(state.forms.import.password, state.forms.import.content);
-        break;
-    }
+    const count = await vaultApi.importVaultData(
+      state.forms.import.filePath,
+      state.forms.import.type
+    );
 
-    toast(t("messages.importFinished", { count }));
+    toast(t("messages.importFinished", { count }), "success");
     state.forms.import = {
       open: false,
       type: "bitwarden",
-      password: "",
+      filePath: "",
       fileName: "",
-      content: "",
       preview: null
     };
     await loadVaultData();
   });
 }
 
-async function executeExport(type) {
+async function chooseImportFile() {
   await withHandledError(async () => {
-    if (type === "backup") {
-      const path = await vaultApi.exportBackup();
-      toast(`${t("messages.backupCreated")} ${path}`);
+    const selected = await open({
+      multiple: false,
+      filters: [
+        {
+          name: "Import file",
+          extensions: IMPORT_FILE_EXTENSIONS[state.forms.import.type] ?? ["json", "xml", "csv"]
+        }
+      ]
+    });
+
+    if (!selected || Array.isArray(selected)) {
       return;
     }
 
-    if (!state.forms.export.password) {
-      toast(t("validation.masterPasswordRequired"), "error");
-      return;
-    }
-
-    if (type === "json") {
-      const content = await vaultApi.exportVaultJson(state.forms.export.password);
-      downloadText("vaultguard-bitwarden.json", content, "application/json");
-    }
-
-    if (type === "xml") {
-      const content = await vaultApi.exportKeepassXml(state.forms.export.password);
-      downloadText("vaultguard-export.xml", content, "application/xml");
-    }
-
-    toast(t("messages.exportReady"));
+    state.forms.import.filePath = selected;
+    state.forms.import.fileName = selected.split(/[\\/]/).pop() || selected;
+    render();
   });
+}
+
+async function executeExport(type) {
+  const password = await promptMasterPassword();
+  if (!password) {
+    openSettingsModal("data");
+    return;
+  }
+
+  const extensions = EXPORT_FILE_EXTENSIONS[type];
+  if (!extensions) {
+    toast(t("validation.invalidImport"), "error");
+    openSettingsModal("data");
+    return;
+  }
+
+  const filePath = await save({
+    filters: [
+      {
+        name: "VaultGuard export",
+        extensions
+      }
+    ],
+    defaultPath: `vaultguard-export.${extensions[0]}`
+  });
+
+  if (!filePath || Array.isArray(filePath)) {
+    openSettingsModal("data");
+    return;
+  }
+
+  await withHandledError(async () => {
+    await vaultApi.exportVaultData(filePath, type, password);
+    toast(t("messages.exportReady"), "success");
+  });
+
+  openSettingsModal("data");
+}
+
+async function finalizeFileProtectionChoice(enabled) {
+  await withHandledError(async () => {
+    const status = await vaultApi.configureFileProtection(enabled);
+    state.ui.fileProtectionSupported = Boolean(status.supported);
+    state.ui.startupIntegrityAlert = status.blocked ? status.message : null;
+    state.forms.setupConfirmation = emptySetupConfirmationForm();
+
+    if (state.ui.startupIntegrityAlert) {
+      render();
+      return;
+    }
+
+    await showPostLoginLoading(() => loadVaultData({ skipRender: true }));
+  });
+}
+
+function promptMasterPassword() {
+  return new Promise((resolve) => {
+    if (masterPasswordPromptResolver) {
+      masterPasswordPromptResolver(null);
+    }
+
+    masterPasswordPromptResolver = resolve;
+    state.forms.settings.open = false;
+    state.forms.masterPasswordPrompt = {
+      open: true,
+      password: "",
+      resumeSettingsSection: "data"
+    };
+    render();
+  });
+}
+
+function resolveMasterPasswordPrompt(password) {
+  const resolver = masterPasswordPromptResolver;
+  masterPasswordPromptResolver = null;
+  state.forms.masterPasswordPrompt = emptyMasterPasswordPromptForm();
+  if (resolver) {
+    resolver(password);
+  }
+}
+
+function submitMasterPasswordPrompt() {
+  const password = state.forms.masterPasswordPrompt.password;
+  if (!password) {
+    toast(t("validation.masterPasswordRequired"), "error");
+      return;
+  }
+
+  resolveMasterPasswordPrompt(password);
 }
 
 async function performLock(message) {
@@ -1792,6 +1901,7 @@ async function performLock(message) {
     state.selectedEntryId = null;
     state.selectedEntryStrength = null;
     state.securityStatus = null;
+    state.forms.setupConfirmation = emptySetupConfirmationForm();
     closeModal(true);
     toast(message);
     render();
@@ -1803,6 +1913,7 @@ function hasOpenModal() {
     state.forms.entry.open,
     state.forms.settings.open,
     state.forms.changePassword.open,
+    state.forms.masterPasswordPrompt.open,
     state.forms.confirm.open
   ].some(Boolean);
 }
@@ -1812,11 +1923,15 @@ function clearModalState() {
   state.forms.generator.open = false;
   state.forms.settings.open = false;
   state.forms.changePassword.open = false;
+  state.forms.masterPasswordPrompt = emptyMasterPasswordPromptForm();
   state.forms.confirm = emptyConfirmForm();
 }
 
 function closeModal(immediate = false) {
   if (immediate || state.ui.modalClosing || !hasOpenModal()) {
+    if (state.forms.masterPasswordPrompt.open) {
+      resolveMasterPasswordPrompt(null);
+    }
     state.ui.modalClosing = false;
     clearModalState();
     render();
@@ -1826,6 +1941,9 @@ function closeModal(immediate = false) {
   state.ui.modalClosing = true;
   render();
   setTimeout(() => {
+    if (state.forms.masterPasswordPrompt.open) {
+      resolveMasterPasswordPrompt(null);
+    }
     state.ui.modalClosing = false;
     clearModalState();
     render();
@@ -2505,6 +2623,13 @@ function resetSetupForm() {
   };
 }
 
+function emptySetupConfirmationForm() {
+  return {
+    stage: null,
+    readyChecked: false
+  };
+}
+
 function emptyChangePasswordForm() {
   return {
     open: false,
@@ -2512,6 +2637,14 @@ function emptyChangePasswordForm() {
     newPassword: "",
     confirmNewPassword: "",
     strength: null
+  };
+}
+
+function emptyMasterPasswordPromptForm() {
+  return {
+    open: false,
+    password: "",
+    resumeSettingsSection: "data"
   };
 }
 

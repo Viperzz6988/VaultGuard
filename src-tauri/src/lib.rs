@@ -12,6 +12,7 @@ mod security;
 mod vault;
 
 use std::sync::Mutex;
+use tauri::Manager;
 
 #[cfg(target_os = "windows")]
 fn apply_windows_process_hardening() {
@@ -64,7 +65,16 @@ pub fn run() {
 
     // Apply security hardening
     security::disable_core_dumps();
+    security::disable_ptrace_attach();
     apply_windows_process_hardening();
+
+    #[cfg(unix)]
+    {
+        // SAFETY: `getuid` reads the effective user ID of the current process.
+        if unsafe { libc::getuid() } == 0 {
+            log::warn!("Running VaultGuard as root is not recommended.");
+        }
+    }
 
     // Determine vault path
     let vault_path = match vault::vault_path() {
@@ -75,14 +85,33 @@ pub fn run() {
         }
     };
 
+    if std::env::args().any(|argument| argument == "--reset-integrity") {
+        match security::reset_integrity_manifest(&vault_path) {
+            Ok(()) => log::info!("VaultGuard integrity manifest refreshed."),
+            Err(error) => log::error!("Failed to reset integrity manifest: {}", error),
+        }
+        return;
+    }
+
     // Initialize application state
     let app_state = commands::AppState::new(vault_path);
 
     let run_result = tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(app_state))
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                let _ = crate::clipboard::clear_clipboard(window.app_handle());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            commands::dialog_open_file,
+            commands::dialog_save_file,
+            commands::get_startup_integrity_status,
+            commands::configure_file_protection,
+            commands::quit_app,
             // Vault lifecycle
             commands::check_vault_exists,
             commands::check_vault_unlocked,
@@ -124,6 +153,8 @@ pub fn run() {
             // Master password
             commands::change_master_password,
             // Import/Export
+            commands::import_vault_data,
+            commands::export_vault_data,
             commands::export_vault_json,
             commands::export_keepass_xml,
             commands::export_backup,

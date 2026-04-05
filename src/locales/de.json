@@ -64,6 +64,28 @@
     "createVault": "Tresor erstellen",
     "passwordHint": "Verwenden Sie eine lange Passphrase mit Woertern, Symbolen und Zahlen.",
     "createdSuccess": "Tresor wurde erfolgreich erstellt.",
+    "requirements": {
+      "length": "Mindestens 15 Zeichen",
+      "uppercase": "Ein Grossbuchstabe",
+      "lowercase": "Ein Kleinbuchstabe",
+      "number": "Eine Zahl",
+      "special": "Ein Sonderzeichen"
+    },
+    "confirmationWarningTitle": "Bevor Sie fortfahren",
+    "confirmationWarningBody": "Ihr Master-Passwort ist der einzige Schluessel zu Ihrem Tresor. VaultGuard speichert es nirgendwo.",
+    "confirmationWarningLoss1": "Ihr Tresor kann nicht wiederhergestellt werden",
+    "confirmationWarningLoss2": "Ihre Passwoerter sind dauerhaft verloren",
+    "confirmationWarningLoss3": "Es gibt kein Zuruecksetzen, keinen Support und keine Hintertuer",
+    "confirmationWarningFooter": "Schreiben Sie es an einem sicheren Ort auf, bevor Sie fortfahren.",
+    "confirmationWarningAction": "Ich verstehe",
+    "confirmationReadyTitle": "Sind Sie sicher?",
+    "confirmationReadyCheckbox": "Ich habe mein Master-Passwort gespeichert und verstehe, dass es bei Verlust nicht wiederhergestellt werden kann.",
+    "integrityTitle": "Dateischutz aktivieren?",
+    "integrityBody": "VaultGuard kann seine eigenen Dateien auf unerwartete Veraenderungen ueberwachen. Wenn eine geschuetzte Datei ausserhalb der App geaendert wird, startet VaultGuard erst wieder nach einer Verifizierung.",
+    "integrityRecommendation": "Empfohlen fuer maximale Sicherheit.",
+    "integritySkip": "Ueberspringen",
+    "integrityEnable": "Schutz aktivieren",
+    "confirmationReadyAction": "Ja, ich bin bereit",
     "warningLead": "Merken Sie sich dieses Passwort. Es wird ",
     "warningNeverStored": "niemals gespeichert",
     "warningMiddle": " und ",
@@ -178,6 +200,11 @@
     "useThisPassword": "Dieses Passwort verwenden",
     "copyGenerated": "Generiertes Geheimnis kopieren"
   },
+  "security": {
+    "integrityAlertTitle": "Sicherheitswarnung",
+    "integrityAlertBody": "VaultGuard-Dateien wurden seit Ihrer letzten Sitzung veraendert.",
+    "integrityAlertExit": "Beenden"
+  },
   "settings": {
     "title": "Einstellungen",
     "generalTitle": "Allgemein",
@@ -250,6 +277,7 @@
   },
   "export": {
     "title": "Tresor exportieren",
+    "reauthDescription": "Geben Sie Ihr Master-Passwort ein, um diesen Export zu bestaetigen, bevor der Speichern-Dialog geoeffnet wird.",
     "encryptedJsonDescription": "Verschluesseltes JSON-Paket mit dem opaken VaultGuard-Tresorblob.",
     "bitwardenDescription": "Portabler Bitwarden-aehnlicher JSON-Export fuer den Umzug in kompatible Werkzeuge.",
     "keepassDescription": "KeePass-XML im Klartext. Nur in einer vertrauenswuerdigen Umgebung verwenden.",

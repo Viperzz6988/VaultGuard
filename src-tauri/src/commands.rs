@@ -10,8 +10,10 @@ use quick_xml::Reader;
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::State;
+use tauri_plugin_dialog::{DialogExt, FilePath};
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
 use zeroize::Zeroize;
@@ -44,11 +46,14 @@ pub struct AppState {
     pub brute_force: BruteForceProtection,
     /// Last modification timestamp observed after a successful load/save by this app.
     pub last_known_vault_mtime: Option<DateTime<Utc>>,
+    /// Startup file-integrity status evaluated before the frontend initializes.
+    pub integrity_status: security::StartupIntegrityStatus,
 }
 
 impl AppState {
     pub fn new(vault_path: std::path::PathBuf) -> Self {
         let brute_force = BruteForceProtection::load(security::brute_force_state_path(&vault_path));
+        let integrity_status = security::startup_integrity_status(&vault_path);
 
         AppState {
             kek: None,
@@ -59,10 +64,25 @@ impl AppState {
             vault_path,
             brute_force,
             last_known_vault_mtime: None,
+            integrity_status,
+        }
+    }
+
+    fn ensure_integrity_ready(&self) -> VaultResult<()> {
+        if self.integrity_status.blocked {
+            Err(VaultError::IntegrityViolation(
+                self.integrity_status
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "VaultGuard file protection blocked startup".to_string()),
+            ))
+        } else {
+            Ok(())
         }
     }
 
     fn ensure_unlocked(&self) -> VaultResult<()> {
+        self.ensure_integrity_ready()?;
         if self.vault_data.is_none() {
             Err(VaultError::VaultLocked)
         } else {
@@ -71,6 +91,7 @@ impl AppState {
     }
 
     fn ensure_authorized(&self, session_token: &str) -> VaultResult<()> {
+        self.ensure_integrity_ready()?;
         let expected = self.session_token.as_ref().ok_or(VaultError::Unauthorized)?;
         if crypto::constant_time_eq(expected.as_bytes(), session_token.as_bytes()) {
             self.ensure_unlocked()
@@ -99,6 +120,10 @@ impl AppState {
 
     fn refresh_vault_tracking(&mut self) {
         self.last_known_vault_mtime = security::file_modified_at(&self.vault_path);
+    }
+
+    fn refresh_integrity_status(&mut self) {
+        self.integrity_status = security::startup_integrity_status(&self.vault_path);
     }
 
     fn set_unlocked_state(
@@ -144,6 +169,7 @@ impl AppState {
         let kek = self.kek.as_ref().ok_or(VaultError::VaultLocked)?;
         let salt = self.salt.as_ref().ok_or(VaultError::VaultLocked)?;
         vault::save_vault(data, dek, kek, salt, &self.vault_path)?;
+        security::refresh_integrity_manifest(&self.vault_path)?;
         self.refresh_vault_tracking();
         Ok(())
     }
@@ -228,6 +254,104 @@ pub enum ReorderPosition {
     After,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DialogFilterInput {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DialogOpenOptions {
+    pub multiple: Option<bool>,
+    pub filters: Option<Vec<DialogFilterInput>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DialogSaveOptions {
+    pub filters: Option<Vec<DialogFilterInput>>,
+    pub default_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ImportedEntry {
+    title: String,
+    username: Option<String>,
+    password: Option<String>,
+    url: Option<String>,
+    notes: Option<String>,
+    favorite: bool,
+    category_name: Option<String>,
+}
+
+#[tauri::command]
+pub fn dialog_open_file(
+    app: tauri::AppHandle,
+    options: DialogOpenOptions,
+) -> Result<Option<String>, VaultError> {
+    if options.multiple.unwrap_or(false) {
+        return Err(VaultError::Validation(
+            "Selecting multiple files is not supported".into(),
+        ));
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut builder = app.dialog().file();
+    for filter in options.filters.unwrap_or_default() {
+        let extensions = filter
+            .extensions
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        builder = builder.add_filter(&filter.name, &extensions);
+    }
+
+    builder.pick_file(move |file_path| {
+        let resolved = file_path.and_then(dialog_file_path_to_string);
+        let _ = tx.send(resolved);
+    });
+
+    rx.recv()
+        .map_err(|_| VaultError::Io("Could not read the selected file path".into()))
+}
+
+#[tauri::command]
+pub fn dialog_save_file(
+    app: tauri::AppHandle,
+    options: DialogSaveOptions,
+) -> Result<Option<String>, VaultError> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut builder = app.dialog().file();
+    for filter in options.filters.unwrap_or_default() {
+        let extensions = filter
+            .extensions
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        builder = builder.add_filter(&filter.name, &extensions);
+    }
+
+    if let Some(default_path) = options.default_path {
+        let path = PathBuf::from(default_path);
+        if let Some(parent) = path.parent() {
+            builder = builder.set_directory(parent);
+        }
+        if let Some(file_name) = path.file_name().and_then(|value| value.to_str()) {
+            builder = builder.set_file_name(file_name);
+        }
+    }
+
+    builder.save_file(move |file_path| {
+        let resolved = file_path.and_then(dialog_file_path_to_string);
+        let _ = tx.send(resolved);
+    });
+
+    rx.recv()
+        .map_err(|_| VaultError::Io("Could not read the selected save path".into()))
+}
+
 // === Vault lifecycle commands ===
 
 #[tauri::command]
@@ -235,6 +359,7 @@ pub fn check_vault_exists(state: State<'_, Mutex<AppState>>) -> Result<bool, Vau
     let state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_integrity_ready()?;
     Ok(vault::vault_exists(&state.vault_path))
 }
 
@@ -243,7 +368,19 @@ pub fn check_vault_unlocked(state: State<'_, Mutex<AppState>>) -> Result<bool, V
     let state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_integrity_ready()?;
     Ok(state.vault_data.is_some())
+}
+
+#[tauri::command]
+pub fn get_startup_integrity_status(
+    state: State<'_, Mutex<AppState>>,
+) -> Result<security::StartupIntegrityStatus, VaultError> {
+    let mut state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.refresh_integrity_status();
+    Ok(state.integrity_status.clone())
 }
 
 #[tauri::command]
@@ -254,16 +391,13 @@ pub fn create_vault(
     let mut state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_integrity_ready()?;
 
-    let strength = crypto::estimate_password_strength(&password);
-    if strength.level < 2 {
-        return Err(VaultError::Validation(
-            "Master password is too weak. Use at least 12 characters with mixed case, numbers, and symbols.".into(),
-        ));
-    }
+    let password = Zeroizing::new(password);
+    crypto::validate_master_password(password.as_str()).map_err(VaultError::Validation)?;
 
-    vault::create_vault(&password, &state.vault_path)?;
-    let loaded = vault::load_vault(&password, &state.vault_path)?;
+    vault::create_vault(password.as_str(), &state.vault_path)?;
+    let loaded = vault::load_vault(password.as_str(), &state.vault_path)?;
     let normalized_on_load = loaded.normalized_on_load;
     state.brute_force.record_success()?;
     state.set_unlocked_state(loaded.data, loaded.kek, loaded.dek, loaded.salt);
@@ -285,6 +419,7 @@ pub fn unlock_vault(
     let mut state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_integrity_ready()?;
 
     state.brute_force.refresh()?;
 
@@ -302,7 +437,8 @@ pub fn unlock_vault(
         });
     }
 
-    match vault::load_vault(&password, &state.vault_path) {
+    let password = Zeroizing::new(password);
+    match vault::load_vault(password.as_str(), &state.vault_path) {
         Ok(loaded) => {
             let normalized_on_load = loaded.normalized_on_load;
             state.brute_force.record_success()?;
@@ -338,10 +474,14 @@ pub fn unlock_vault(
 }
 
 #[tauri::command]
-pub fn lock_vault(state: State<'_, Mutex<AppState>>) -> Result<(), VaultError> {
+pub fn lock_vault(
+    app: tauri::AppHandle,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), VaultError> {
     let mut state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    crate::clipboard::clear_clipboard(&app).map_err(VaultError::Io)?;
     state.lock();
     Ok(())
 }
@@ -353,28 +493,34 @@ pub fn get_brute_force_status(
     let mut state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_integrity_ready()?;
     state.brute_force.refresh()?;
     Ok(state.brute_force.get_status())
 }
 
 #[tauri::command]
 pub fn get_vault_file_status(
+    session_token: String,
     state: State<'_, Mutex<AppState>>,
 ) -> Result<VaultFileStatus, VaultError> {
     let state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
     Ok(state.vault_file_status())
 }
 
 // === Entry CRUD commands ===
 
 #[tauri::command]
-pub fn get_entries(state: State<'_, Mutex<AppState>>) -> Result<Vec<EntrySummary>, VaultError> {
+pub fn get_entries(
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<EntrySummary>, VaultError> {
     let mut state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
-    state.ensure_unlocked()?;
+    state.ensure_authorized(&session_token)?;
 
     let mut needs_save = false;
     if let Some(data) = state.vault_data.as_mut() {
@@ -625,11 +771,14 @@ pub fn get_trash(
 // === Category commands ===
 
 #[tauri::command]
-pub fn get_categories(state: State<'_, Mutex<AppState>>) -> Result<Vec<Category>, VaultError> {
+pub fn get_categories(
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<Vec<Category>, VaultError> {
     let state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
-    state.ensure_unlocked()?;
+    state.ensure_authorized(&session_token)?;
 
     let mut categories = state
         .vault_data
@@ -911,6 +1060,12 @@ pub fn clear_clipboard(app: tauri::AppHandle) -> Result<(), VaultError> {
 }
 
 #[tauri::command]
+pub fn quit_app(app: tauri::AppHandle) -> Result<(), VaultError> {
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
 pub fn open_url(
     app: tauri::AppHandle,
     url: String,
@@ -930,17 +1085,20 @@ pub fn open_url(
 
     app.opener()
         .open_url(url, None::<&str>)
-        .map_err(|error| VaultError::Io(format!("Failed to open URL: {error}")))
+        .map_err(|_| VaultError::Io("Could not open the requested URL".into()))
 }
 
 // === Settings commands ===
 
 #[tauri::command]
-pub fn get_settings(state: State<'_, Mutex<AppState>>) -> Result<VaultSettings, VaultError> {
+pub fn get_settings(
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<VaultSettings, VaultError> {
     let state = state
         .lock()
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
-    state.ensure_unlocked()?;
+    state.ensure_authorized(&session_token)?;
     Ok(state
         .vault_data
         .as_ref()
@@ -993,6 +1151,21 @@ pub fn update_settings(
     Ok(result)
 }
 
+#[tauri::command]
+pub fn configure_file_protection(
+    enabled: bool,
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<security::StartupIntegrityStatus, VaultError> {
+    let mut state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
+    let status = security::configure_file_protection(&state.vault_path, enabled)?;
+    state.integrity_status = status.clone();
+    Ok(status)
+}
+
 // === Master password change ===
 
 #[tauri::command]
@@ -1007,17 +1180,17 @@ pub fn change_master_password(
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
     state.ensure_authorized(&session_token)?;
 
-    let _ = vault::load_vault(&current_password, &state.vault_path)?;
+    let current_password = Zeroizing::new(current_password);
+    let new_password = Zeroizing::new(new_password);
 
-    let strength = crypto::estimate_password_strength(&new_password);
-    if strength.level < 2 {
-        return Err(VaultError::Validation("New password is too weak".into()));
-    }
+    let _ = vault::load_vault(current_password.as_str(), &state.vault_path)?;
+
+    crypto::validate_master_password(new_password.as_str()).map_err(VaultError::Validation)?;
 
     let data = state.vault_data.as_ref().ok_or(VaultError::VaultLocked)?;
     let dek = state.dek.as_ref().ok_or(VaultError::VaultLocked)?;
     let (new_kek, new_salt) =
-        vault::change_master_password(data, dek, &new_password, &state.vault_path)?;
+        vault::change_master_password(data, dek, new_password.as_str(), &state.vault_path)?;
 
     state.unlock_key_material();
     state.kek = Some(new_kek);
@@ -1031,6 +1204,63 @@ pub fn change_master_password(
 // === Import/Export commands ===
 
 #[tauri::command]
+pub fn import_vault_data(
+    file_path: String,
+    format: String,
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<usize, VaultError> {
+    let mut state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
+
+    let content = load_import_file(Path::new(&file_path))?;
+    let entries = match format.as_str() {
+        "bitwarden" => parse_bitwarden_json(&content)?,
+        "keepass" => parse_keepass_xml(&content)?,
+        "1password" => parse_1password_csv(&content)?,
+        "lastpass" => parse_lastpass_csv(&content)?,
+        "dashlane" => parse_dashlane_csv(&content)?,
+        "generic" => parse_generic_csv(&content)?,
+        _ => return Err(VaultError::Validation("Unsupported import format".into())),
+    };
+
+    let imported_count = entries.len();
+    append_entries_to_vault(&mut state, entries)?;
+    Ok(imported_count)
+}
+
+#[tauri::command]
+pub fn export_vault_data(
+    file_path: String,
+    format: String,
+    master_password: String,
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), VaultError> {
+    let state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
+
+    let master_password = Zeroizing::new(master_password);
+    verify_master_password(&state, master_password.as_str())?;
+
+    let data = state.vault_data.as_ref().ok_or(VaultError::VaultLocked)?;
+    let export_bytes = match format.as_str() {
+        "encrypted" => export_encrypted_backup(&state.vault_path)?,
+        "keepass" => build_keepass_xml(data).into_bytes(),
+        "bitwarden" => build_bitwarden_export_json(data)?.into_bytes(),
+        _ => return Err(VaultError::Validation("Unsupported export format".into())),
+    };
+
+    std::fs::write(&file_path, export_bytes)
+        .map_err(|_| VaultError::Io("Could not write the export file".into()))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn export_vault_json(
     password: String,
     session_token: String,
@@ -1041,9 +1271,131 @@ pub fn export_vault_json(
         .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
     state.ensure_authorized(&session_token)?;
 
-    let _ = vault::load_vault(&password, &state.vault_path)?;
+    let password = Zeroizing::new(password);
+    verify_master_password(&state, password.as_str())?;
     let data = state.vault_data.as_ref().ok_or(VaultError::VaultLocked)?;
+    build_bitwarden_export_json(data)
+}
 
+#[tauri::command]
+pub fn export_keepass_xml(
+    password: String,
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, VaultError> {
+    let state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
+
+    let password = Zeroizing::new(password);
+    verify_master_password(&state, password.as_str())?;
+    let data = state.vault_data.as_ref().ok_or(VaultError::VaultLocked)?;
+    Ok(build_keepass_xml(data))
+}
+
+#[tauri::command]
+pub fn export_backup(
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<String, VaultError> {
+    let state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
+
+    let export_dir = dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| VaultError::Io("Cannot find export directory".into()))?;
+
+    let backup_path = vault::export_backup(&state.vault_path, &export_dir)?;
+    Ok(backup_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn restore_last_good_backup(
+    password: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<(), VaultError> {
+    let mut state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_integrity_ready()?;
+
+    state.lock();
+    let password = Zeroizing::new(password);
+    vault::restore_last_good_backup(password.as_str(), &state.vault_path)?;
+    security::refresh_integrity_manifest(&state.vault_path)?;
+    state.refresh_vault_tracking();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn import_bitwarden_json(
+    password: String,
+    json_content: String,
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<u32, VaultError> {
+    let mut state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
+    let password = Zeroizing::new(password);
+    verify_master_password(&state, password.as_str())?;
+
+    let entries = parse_bitwarden_json(&json_content)?;
+    let count = entries.len() as u32;
+    append_entries_to_vault(&mut state, entries)?;
+    Ok(count)
+}
+
+#[tauri::command]
+pub fn import_csv(
+    password: String,
+    csv_content: String,
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<u32, VaultError> {
+    let mut state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
+    let password = Zeroizing::new(password);
+    verify_master_password(&state, password.as_str())?;
+
+    let entries = parse_generic_csv(&csv_content)?;
+    let count = entries.len() as u32;
+    append_entries_to_vault(&mut state, entries)?;
+    Ok(count)
+}
+
+#[tauri::command]
+pub fn import_keepass_xml(
+    password: String,
+    xml_content: String,
+    session_token: String,
+    state: State<'_, Mutex<AppState>>,
+) -> Result<u32, VaultError> {
+    let mut state = state
+        .lock()
+        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+    state.ensure_authorized(&session_token)?;
+    let password = Zeroizing::new(password);
+    verify_master_password(&state, password.as_str())?;
+
+    let entries = parse_keepass_xml(&xml_content)?;
+    let count = entries.len() as u32;
+    append_entries_to_vault(&mut state, entries)?;
+    Ok(count)
+}
+
+fn verify_master_password(state: &AppState, password: &str) -> VaultResult<()> {
+    let _ = vault::load_vault(password, &state.vault_path)?;
+    Ok(())
+}
+
+fn build_bitwarden_export_json(data: &VaultData) -> VaultResult<String> {
     let folders = data
         .categories
         .iter()
@@ -1082,198 +1434,362 @@ pub fn export_vault_json(
     };
 
     serde_json::to_string_pretty(&export)
-        .map_err(|e| VaultError::Serialization(format!("Failed to serialize Bitwarden export: {}", e)))
+        .map_err(|_| VaultError::Serialization("Failed to serialize the Bitwarden export".into()))
 }
 
-#[tauri::command]
-pub fn export_keepass_xml(
-    password: String,
-    session_token: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<String, VaultError> {
-    let state = state
-        .lock()
-        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
-    state.ensure_authorized(&session_token)?;
-
-    let _ = vault::load_vault(&password, &state.vault_path)?;
-    let data = state.vault_data.as_ref().ok_or(VaultError::VaultLocked)?;
-    Ok(build_keepass_xml(data))
+fn export_encrypted_backup(vault_path: &Path) -> VaultResult<Vec<u8>> {
+    std::fs::read(vault_path).map_err(|_| VaultError::Io("Could not read the vault file".into()))
 }
 
-#[tauri::command]
-pub fn export_backup(
-    session_token: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<String, VaultError> {
-    let state = state
-        .lock()
-        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
-    state.ensure_authorized(&session_token)?;
+fn load_import_file(path: &Path) -> VaultResult<String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|_| VaultError::Io("Could not read the selected import file".into()))?;
+    if metadata.len() > MAX_IMPORT_FILE_BYTES {
+        return Err(VaultError::ImportExport(
+            "Import files larger than 10 MB are not supported".into(),
+        ));
+    }
 
-    let export_dir = dirs::download_dir()
-        .or_else(dirs::home_dir)
-        .ok_or_else(|| VaultError::Io("Cannot find export directory".into()))?;
-
-    let backup_path = vault::export_backup(&state.vault_path, &export_dir)?;
-    Ok(backup_path.to_string_lossy().to_string())
+    std::fs::read_to_string(path)
+        .map_err(|_| VaultError::Io("Could not read the selected import file".into()))
 }
 
-#[tauri::command]
-pub fn restore_last_good_backup(
-    password: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<(), VaultError> {
-    let mut state = state
-        .lock()
-        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
+fn append_entries_to_vault(state: &mut AppState, imported_entries: Vec<ImportedEntry>) -> VaultResult<()> {
+    let data = state.vault_data.as_mut().ok_or(VaultError::VaultLocked)?;
 
-    state.lock();
-    vault::restore_last_good_backup(&password, &state.vault_path)?;
-    state.refresh_vault_tracking();
+    for imported in imported_entries {
+        let category_id = imported
+            .category_name
+            .as_deref()
+            .map(|name| ensure_category_by_name(data, name))
+            .or_else(|| Some(BUILTIN_OTHER_CATEGORY_ID.to_string()));
+
+        let mut entry = Entry::new(imported.title);
+        entry.username = imported.username;
+        entry.password = imported.password;
+        entry.url = imported.url;
+        entry.notes = imported.notes;
+        entry.favorite = imported.favorite;
+        entry.category_id = category_id;
+        entry.sort_order = next_entry_sort_order(&data.entries, entry.category_id.as_deref());
+        data.entries.push(entry);
+    }
+
+    state.save()?;
     Ok(())
 }
 
-#[tauri::command]
-pub fn import_bitwarden_json(
-    password: String,
-    json_content: String,
-    session_token: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<u32, VaultError> {
-    let mut state = state
-        .lock()
-        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
-    state.ensure_authorized(&session_token)?;
-    let _ = vault::load_vault(&password, &state.vault_path)?;
-
-    let bw: serde_json::Value = serde_json::from_str(&json_content)
-        .map_err(|e| VaultError::ImportExport(format!("Invalid JSON: {}", e)))?;
-    let items = bw
+fn parse_bitwarden_json(content: &str) -> VaultResult<Vec<ImportedEntry>> {
+    let parsed: serde_json::Value = serde_json::from_str(content)
+        .map_err(|_| VaultError::ImportExport("The Bitwarden file is not valid JSON".into()))?;
+    let items = parsed
         .get("items")
         .and_then(|value| value.as_array())
-        .ok_or_else(|| VaultError::ImportExport("No 'items' array found in Bitwarden export".into()))?;
+        .ok_or_else(|| VaultError::ImportExport("The Bitwarden export does not contain an items array".into()))?;
 
-    let data = state.vault_data.as_mut().ok_or(VaultError::VaultLocked)?;
-    let mut count = 0u32;
+    let folders = parsed
+        .get("folders")
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|folder| {
+            let id = folder.get("id")?.as_str()?.to_string();
+            let name = sanitize_import_category_name(folder.get("name").and_then(|value| value.as_str()).map(str::to_string));
+            name.map(|name| (id, name))
+        })
+        .collect::<HashMap<_, _>>();
 
-    for item in items {
-        let name = item.get("name").and_then(|value| value.as_str()).unwrap_or("Untitled");
-        let mut entry = Entry::new(name.to_string());
+    Ok(items
+        .iter()
+        .map(|item| {
+            let login = item.get("login");
+            let category_name = item
+                .get("folderId")
+                .and_then(|value| value.as_str())
+                .and_then(|folder_id| folders.get(folder_id).cloned());
 
-        if let Some(login) = item.get("login") {
-            entry.username = login.get("username").and_then(|value| value.as_str()).map(String::from);
-            entry.password = login.get("password").and_then(|value| value.as_str()).map(String::from);
-
-            if let Some(uris) = login.get("uris").and_then(|value| value.as_array()) {
-                entry.url = uris
-                    .first()
-                    .and_then(|uri| uri.get("uri"))
-                    .and_then(|value| value.as_str())
-                    .map(String::from);
+            ImportedEntry {
+                title: sanitize_import_required_text(
+                    item.get("name").and_then(|value| value.as_str()).unwrap_or("Imported Entry"),
+                    MAX_TITLE_LENGTH,
+                    "Imported Entry",
+                ),
+                username: sanitize_import_optional_text(
+                    login
+                        .and_then(|value| value.get("username"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    MAX_USERNAME_LENGTH,
+                    true,
+                ),
+                password: sanitize_import_optional_text(
+                    login
+                        .and_then(|value| value.get("password"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    MAX_PASSWORD_LENGTH,
+                    false,
+                ),
+                url: sanitize_import_url(
+                    login
+                        .and_then(|value| value.get("uris"))
+                        .and_then(|value| value.as_array())
+                        .and_then(|uris| uris.first())
+                        .and_then(|uri| uri.get("uri"))
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                ),
+                notes: sanitize_import_optional_text(
+                    item.get("notes").and_then(|value| value.as_str()).map(str::to_string),
+                    MAX_NOTES_LENGTH,
+                    false,
+                ),
+                favorite: item
+                    .get("favorite")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                category_name,
             }
-        }
-
-        entry.notes = item.get("notes").and_then(|value| value.as_str()).map(String::from);
-        entry.favorite = item
-            .get("favorite")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false);
-
-        entry.title = sanitize_required_text(entry.title, MAX_TITLE_LENGTH, "Title")?;
-        entry.username = sanitize_optional_text(entry.username, MAX_USERNAME_LENGTH, "Username", true)?;
-        entry.password = sanitize_optional_text(entry.password, MAX_PASSWORD_LENGTH, "Password", false)?;
-        entry.url = sanitize_optional_url(entry.url)?;
-        entry.notes = sanitize_optional_text(entry.notes, MAX_NOTES_LENGTH, "Notes", false)?;
-
-        data.entries.push(entry);
-        count += 1;
-    }
-
-    state.save()?;
-    Ok(count)
+        })
+        .collect())
 }
 
-#[tauri::command]
-pub fn import_csv(
-    password: String,
-    csv_content: String,
-    session_token: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<u32, VaultError> {
-    let mut state = state
-        .lock()
-        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
-    state.ensure_authorized(&session_token)?;
-    let _ = vault::load_vault(&password, &state.vault_path)?;
+fn parse_keepass_xml(content: &str) -> VaultResult<Vec<ImportedEntry>> {
+    let mut data = VaultData::new_empty();
+    parse_keepass_xml_into_entries(content, &mut data)?;
 
+    let categories_by_id = data
+        .categories
+        .iter()
+        .map(|category| {
+            (
+                category.id.clone(),
+                (category.name.clone(), category.built_in),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    Ok(std::mem::take(&mut data.entries)
+        .into_iter()
+        .map(|entry| ImportedEntry {
+            title: entry.title,
+            username: entry.username,
+            password: entry.password,
+            url: entry.url,
+            notes: entry.notes,
+            favorite: entry.favorite,
+            category_name: entry.category_id.and_then(|category_id| {
+                categories_by_id.get(&category_id).and_then(|(name, built_in)| {
+                    if *built_in {
+                        None
+                    } else {
+                        Some(name.clone())
+                    }
+                })
+            }),
+        })
+        .collect())
+}
+
+fn parse_1password_csv(content: &str) -> VaultResult<Vec<ImportedEntry>> {
+    parse_csv_entries(
+        content,
+        &["title", "name", "entry", "site"][..],
+        &["username", "login", "email"][..],
+        &["password", "passcode"][..],
+        &["url", "website", "login url"][..],
+        &["notes", "note"][..],
+        &["category", "vault", "group"][..],
+    )
+}
+
+fn parse_lastpass_csv(content: &str) -> VaultResult<Vec<ImportedEntry>> {
+    parse_csv_entries(
+        content,
+        &["name", "title", "site"][..],
+        &["username", "user", "login", "email"][..],
+        &["password", "pass", "pwd"][..],
+        &["url", "site", "website", "link"][..],
+        &["extra", "notes", "note", "comments"][..],
+        &["grouping", "folder", "category"][..],
+    )
+}
+
+fn parse_dashlane_csv(content: &str) -> VaultResult<Vec<ImportedEntry>> {
+    parse_csv_entries(
+        content,
+        &["title", "name", "website name", "item name"][..],
+        &["username", "login", "email"][..],
+        &["password", "pass"][..],
+        &["url", "website", "login url"][..],
+        &["note", "notes", "comments"][..],
+        &["category", "space", "folder"][..],
+    )
+}
+
+fn parse_generic_csv(content: &str) -> VaultResult<Vec<ImportedEntry>> {
+    parse_csv_entries(
+        content,
+        &["title", "name", "entry", "site"][..],
+        &["username", "user", "login", "email"][..],
+        &["password", "pass", "pwd"][..],
+        &["url", "uri", "website", "site", "link"][..],
+        &["notes", "note", "comments", "extra"][..],
+        &["category", "folder", "group"][..],
+    )
+}
+
+fn parse_csv_entries(
+    content: &str,
+    title_headers: &[&str],
+    username_headers: &[&str],
+    password_headers: &[&str],
+    url_headers: &[&str],
+    notes_headers: &[&str],
+    category_headers: &[&str],
+) -> VaultResult<Vec<ImportedEntry>> {
     let mut reader = csv::ReaderBuilder::new()
         .flexible(true)
         .has_headers(true)
-        .from_reader(csv_content.as_bytes());
+        .from_reader(content.as_bytes());
 
     let headers = reader
         .headers()
-        .map_err(|e| VaultError::ImportExport(format!("CSV header error: {}", e)))?
+        .map_err(|_| VaultError::ImportExport("The CSV file header could not be read".into()))?
         .clone();
 
-    let title_idx = find_header_index(&headers, &["name", "title", "entry", "site"]);
-    let user_idx = find_header_index(&headers, &["username", "user", "login", "email"]);
-    let pass_idx = find_header_index(&headers, &["password", "pass", "pwd"]);
-    let url_idx = find_header_index(&headers, &["url", "uri", "website", "site", "link"]);
-    let notes_idx = find_header_index(&headers, &["notes", "note", "comments", "extra"]);
+    let title_idx = find_header_index(&headers, title_headers);
+    let username_idx = find_header_index(&headers, username_headers);
+    let password_idx = find_header_index(&headers, password_headers);
+    let url_idx = find_header_index(&headers, url_headers);
+    let notes_idx = find_header_index(&headers, notes_headers);
+    let category_idx = find_header_index(&headers, category_headers);
 
-    let data = state.vault_data.as_mut().ok_or(VaultError::VaultLocked)?;
-    let mut count = 0u32;
+    let mut imported_entries = Vec::new();
+    for record in reader.records() {
+        let record = record
+            .map_err(|_| VaultError::ImportExport("The CSV file contains an invalid row".into()))?;
 
-    for result in reader.records() {
-        let record =
-            result.map_err(|e| VaultError::ImportExport(format!("CSV parse error: {}", e)))?;
-        let title = title_idx
-            .and_then(|index| record.get(index))
-            .unwrap_or("Imported Entry");
+        let title_cell = title_idx.and_then(|index| record.get(index)).unwrap_or("");
+        let username_cell = username_idx.and_then(|index| record.get(index)).unwrap_or("");
+        let password_cell = password_idx.and_then(|index| record.get(index)).unwrap_or("");
+        let url_cell = url_idx.and_then(|index| record.get(index)).unwrap_or("");
+        let notes_cell = notes_idx.and_then(|index| record.get(index)).unwrap_or("");
 
-        if title.trim().is_empty() {
+        if [title_cell, username_cell, password_cell, url_cell, notes_cell]
+            .iter()
+            .all(|value| value.trim().is_empty())
+        {
             continue;
         }
 
-        let mut entry = Entry::new(title.trim().to_string());
-        entry.username = user_idx.and_then(|index| record.get(index)).map(String::from);
-        entry.password = pass_idx.and_then(|index| record.get(index)).map(String::from);
-        entry.url = url_idx.and_then(|index| record.get(index)).map(String::from);
-        entry.notes = notes_idx.and_then(|index| record.get(index)).map(String::from);
-
-        entry.title = sanitize_required_text(entry.title, MAX_TITLE_LENGTH, "Title")?;
-        entry.username = sanitize_optional_text(entry.username, MAX_USERNAME_LENGTH, "Username", true)?;
-        entry.password = sanitize_optional_text(entry.password, MAX_PASSWORD_LENGTH, "Password", false)?;
-        entry.url = sanitize_optional_url(entry.url)?;
-        entry.notes = sanitize_optional_text(entry.notes, MAX_NOTES_LENGTH, "Notes", false)?;
-
-        data.entries.push(entry);
-        count += 1;
+        imported_entries.push(ImportedEntry {
+            title: sanitize_import_required_text(title_cell, MAX_TITLE_LENGTH, "Imported Entry"),
+            username: sanitize_import_optional_text(
+                string_cell(username_idx, &record),
+                MAX_USERNAME_LENGTH,
+                true,
+            ),
+            password: sanitize_import_optional_text(
+                string_cell(password_idx, &record),
+                MAX_PASSWORD_LENGTH,
+                false,
+            ),
+            url: sanitize_import_url(string_cell(url_idx, &record)),
+            notes: sanitize_import_optional_text(
+                string_cell(notes_idx, &record),
+                MAX_NOTES_LENGTH,
+                false,
+            ),
+            favorite: false,
+            category_name: sanitize_import_category_name(string_cell(category_idx, &record)),
+        });
     }
 
-    state.save()?;
-    Ok(count)
+    Ok(imported_entries)
 }
 
-#[tauri::command]
-pub fn import_keepass_xml(
-    password: String,
-    xml_content: String,
-    session_token: String,
-    state: State<'_, Mutex<AppState>>,
-) -> Result<u32, VaultError> {
-    let mut state = state
-        .lock()
-        .map_err(|_| VaultError::Crypto("State lock poisoned".into()))?;
-    state.ensure_authorized(&session_token)?;
-    let _ = vault::load_vault(&password, &state.vault_path)?;
+fn string_cell(index: Option<usize>, record: &csv::StringRecord) -> Option<String> {
+    index
+        .and_then(|value| record.get(value))
+        .map(str::to_string)
+}
 
-    let data = state.vault_data.as_mut().ok_or(VaultError::VaultLocked)?;
-    let count = parse_keepass_xml_into_entries(&xml_content, data)?;
-    state.save()?;
-    Ok(count)
+fn sanitize_import_required_text(value: impl AsRef<str>, max_len: usize, fallback: &str) -> String {
+    let sanitized = sanitize_import_string(value.as_ref(), max_len, true);
+    if sanitized.is_empty() {
+        fallback.to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn sanitize_import_optional_text(
+    value: Option<String>,
+    max_len: usize,
+    trim: bool,
+) -> Option<String> {
+    let value = value?;
+    let sanitized = sanitize_import_string(&value, max_len, trim);
+    if sanitized.is_empty() {
+        None
+    } else {
+        Some(sanitized)
+    }
+}
+
+fn sanitize_import_category_name(value: Option<String>) -> Option<String> {
+    sanitize_import_optional_text(value, MAX_CATEGORY_LENGTH, true)
+}
+
+fn sanitize_import_url(value: Option<String>) -> Option<String> {
+    let sanitized = sanitize_import_optional_text(value, MAX_URL_LENGTH, true)?;
+    let parsed = Url::parse(&sanitized).ok()?;
+    match parsed.scheme().to_ascii_lowercase().as_str() {
+        "https" | "http" | "ssh" => Some(sanitized),
+        _ => None,
+    }
+}
+
+fn sanitize_import_string(value: &str, max_len: usize, trim: bool) -> String {
+    let without_nulls = value.replace('\0', "");
+    let without_html = strip_html_tags(&without_nulls);
+    let normalized = if trim {
+        without_html.trim().to_string()
+    } else {
+        without_html
+    };
+    truncate_chars(normalized, max_len)
+}
+
+fn strip_html_tags(value: &str) -> String {
+    let mut stripped = String::with_capacity(value.len());
+    let mut in_tag = false;
+
+    for ch in value.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => stripped.push(ch),
+            _ => {}
+        }
+    }
+
+    stripped
+}
+
+fn truncate_chars(value: String, max_len: usize) -> String {
+    value.chars().take(max_len).collect()
+}
+
+fn dialog_file_path_to_string(file_path: FilePath) -> Option<String> {
+    match file_path {
+        FilePath::Path(path) => Some(path.to_string_lossy().into_owned()),
+        FilePath::Url(url) => url
+            .to_file_path()
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned()),
+    }
 }
 
 const MAX_TITLE_LENGTH: usize = 256;
@@ -1281,6 +1797,7 @@ const MAX_USERNAME_LENGTH: usize = 256;
 const MAX_PASSWORD_LENGTH: usize = 1024;
 const MAX_URL_LENGTH: usize = 2048;
 const MAX_NOTES_LENGTH: usize = 10_000;
+const MAX_IMPORT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_CATEGORY_LENGTH: usize = 64;
 const MAX_TAG_LENGTH: usize = 64;
 const MAX_CUSTOM_FIELD_KEY_LENGTH: usize = 128;
@@ -1382,8 +1899,10 @@ fn sanitize_optional_url(value: Option<String>) -> VaultResult<Option<String>> {
     let parsed = Url::parse(&url)
         .map_err(|_| VaultError::Validation("URL must be a well-formed absolute URL".into()))?;
     let scheme = parsed.scheme().to_ascii_lowercase();
-    if matches!(scheme.as_str(), "javascript" | "data" | "file") {
-        return Err(VaultError::Validation("URL scheme is not allowed".into()));
+    if !matches!(scheme.as_str(), "http" | "https" | "ssh") {
+        return Err(VaultError::Validation(
+            "URL must start with https://, http://, or ssh://".into(),
+        ));
     }
 
     Ok(Some(url))
@@ -1793,16 +2312,42 @@ impl KeepassImportEntry {
 
     fn into_entry(self, category_id: Option<String>) -> VaultResult<Entry> {
         let now = Utc::now();
-        let mut entry = Entry {
+        let entry = Entry {
             id: uuid::Uuid::new_v4().to_string(),
-            title: self.title.unwrap_or_else(|| "Imported Entry".to_string()),
-            username: self.username,
-            password: self.password,
-            url: self.url,
-            notes: self.notes,
+            title: sanitize_import_required_text(
+                self.title.unwrap_or_else(|| "Imported Entry".to_string()),
+                MAX_TITLE_LENGTH,
+                "Imported Entry",
+            ),
+            username: sanitize_import_optional_text(self.username, MAX_USERNAME_LENGTH, true),
+            password: sanitize_import_optional_text(self.password, MAX_PASSWORD_LENGTH, false),
+            url: sanitize_import_url(self.url),
+            notes: sanitize_import_optional_text(self.notes, MAX_NOTES_LENGTH, false),
             category_id,
-            tags: self.tags,
-            custom_fields: self.custom_fields,
+            tags: self
+                .tags
+                .into_iter()
+                .filter_map(|tag| sanitize_import_optional_text(Some(tag), MAX_TAG_LENGTH, true))
+                .collect(),
+            custom_fields: self
+                .custom_fields
+                .into_iter()
+                .filter_map(|field| {
+                    let key =
+                        sanitize_import_optional_text(Some(field.key), MAX_CUSTOM_FIELD_KEY_LENGTH, true)?;
+                    let value = sanitize_import_optional_text(
+                        Some(field.value),
+                        MAX_CUSTOM_FIELD_VALUE_LENGTH,
+                        false,
+                    )
+                    .unwrap_or_default();
+                    Some(CustomField {
+                        key,
+                        value,
+                        hidden: field.hidden,
+                    })
+                })
+                .collect(),
             password_history: Vec::new(),
             favorite: self.favorite,
             created_at: self.created_at.unwrap_or(now),
@@ -1811,21 +2356,18 @@ impl KeepassImportEntry {
             sort_order: 0,
         };
 
-        entry.title = sanitize_required_text(entry.title, MAX_TITLE_LENGTH, "Title")?;
-        entry.username =
-            sanitize_optional_text(entry.username, MAX_USERNAME_LENGTH, "Username", true)?;
-        entry.password =
-            sanitize_optional_text(entry.password, MAX_PASSWORD_LENGTH, "Password", false)?;
-        entry.url = sanitize_optional_url(entry.url)?;
-        entry.notes = sanitize_optional_text(entry.notes, MAX_NOTES_LENGTH, "Notes", false)?;
-        entry.tags = sanitize_tags(entry.tags)?;
-        entry.custom_fields = sanitize_custom_fields(entry.custom_fields)?;
-
         Ok(entry)
     }
 }
 
 fn parse_keepass_xml_into_entries(xml_content: &str, data: &mut VaultData) -> VaultResult<u32> {
+    let lowered = xml_content.to_ascii_lowercase();
+    if lowered.contains("<!doctype") || lowered.contains("<!entity") {
+        return Err(VaultError::ImportExport(
+            "KeePass XML files with external entities are not supported".into(),
+        ));
+    }
+
     let mut reader = Reader::from_str(xml_content);
     reader.config_mut().trim_text(true);
 
@@ -2076,6 +2618,108 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(restored.entries[0].title, "Roundtrip");
         assert_eq!(restored.entries[0].username.as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn bitwarden_parser_imports_minimal_entry() {
+        let imported = parse_bitwarden_json(
+            r#"{
+                "folders":[{"id":"folder-1","name":"Work"}],
+                "items":[
+                    {
+                        "name":"Example",
+                        "favorite":true,
+                        "folderId":"folder-1",
+                        "notes":"<b>note</b>",
+                        "login":{
+                            "username":"alice@example.com",
+                            "password":"Secret!123",
+                            "uris":[{"uri":"https://example.com"}]
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .expect("test should parse Bitwarden JSON");
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].title, "Example");
+        assert_eq!(imported[0].notes.as_deref(), Some("note"));
+        assert_eq!(imported[0].category_name.as_deref(), Some("Work"));
+        assert!(imported[0].favorite);
+    }
+
+    #[test]
+    fn keepass_parser_imports_minimal_entry() {
+        let imported = parse_keepass_xml(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+            <KeePassFile>
+              <Root>
+                <Group>
+                  <Name>Imported Group</Name>
+                  <Entry>
+                    <String><Key>Title</Key><Value>SSH Key</Value></String>
+                    <String><Key>UserName</Key><Value>deploy</Value></String>
+                    <String><Key>Password</Key><Value>p@ss</Value></String>
+                    <String><Key>URL</Key><Value>ssh://example.com</Value></String>
+                  </Entry>
+                </Group>
+              </Root>
+            </KeePassFile>"#,
+        )
+        .expect("test should parse KeePass XML");
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].title, "SSH Key");
+        assert_eq!(imported[0].category_name.as_deref(), Some("Imported Group"));
+        assert_eq!(imported[0].url.as_deref(), Some("ssh://example.com"));
+    }
+
+    #[test]
+    fn one_password_csv_parser_imports_minimal_entry() {
+        let imported = parse_1password_csv(
+            "Title,Url,Username,Password,Notes\nExample,https://example.com,alice,Secret!123,hello\n",
+        )
+        .expect("test should parse 1Password CSV");
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].title, "Example");
+        assert_eq!(imported[0].username.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn lastpass_csv_parser_imports_minimal_entry() {
+        let imported = parse_lastpass_csv(
+            "name,url,username,password,extra,grouping\nExample,https://example.com,alice,Secret!123,note,Shared\n",
+        )
+        .expect("test should parse LastPass CSV");
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].category_name.as_deref(), Some("Shared"));
+        assert_eq!(imported[0].notes.as_deref(), Some("note"));
+    }
+
+    #[test]
+    fn dashlane_csv_parser_imports_minimal_entry() {
+        let imported = parse_dashlane_csv(
+            "title,website,login,password,note,category\nExample,https://example.com,alice,Secret!123,hello,Finance\n",
+        )
+        .expect("test should parse Dashlane CSV");
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].category_name.as_deref(), Some("Finance"));
+    }
+
+    #[test]
+    fn generic_csv_parser_imports_minimal_entry() {
+        let imported = parse_generic_csv(
+            "title,username,password,url,notes\nExample,alice,Secret!123,https://example.com,hello\n",
+        )
+        .expect("test should parse generic CSV");
+
+        assert_eq!(imported.len(), 1);
+        assert_eq!(imported[0].title, "Example");
+        assert_eq!(imported[0].url.as_deref(), Some("https://example.com"));
     }
 
     #[test]

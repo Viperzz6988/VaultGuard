@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -19,6 +19,9 @@ use crate::error::{VaultError, VaultResult};
 
 const MACHINE_KEY_SIZE: usize = 32;
 const DEFAULT_MAX_ATTEMPTS: u32 = 10;
+const FILE_PROTECTION_CONFIG_FILE: &str = "config.json";
+const FILE_PROTECTION_MANIFEST_FILE: &str = "integrity.json";
+const INTEGRITY_ALERT_MESSAGE: &str = "VaultGuard files were modified since your last session.\nFor your safety, the app cannot start.\n\nTo reset after an intentional update:\n  vaultguard --reset-integrity";
 
 /// Disable core dumps on Linux to prevent memory leaks to disk.
 pub fn disable_core_dumps() {
@@ -30,6 +33,21 @@ pub fn disable_core_dumps() {
             let result = libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
             if result != 0 {
                 log::warn!("Failed to disable core dumps: prctl returned {}", result);
+            }
+        }
+    }
+}
+
+/// Prevent debuggers from attaching to the running process on Linux.
+pub fn disable_ptrace_attach() {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `prctl` is called with the documented `PR_SET_PTRACER`
+        // operation and a null ptracer PID to disallow future attachments.
+        unsafe {
+            let result = libc::prctl(libc::PR_SET_PTRACER, 0, 0, 0, 0);
+            if result != 0 {
+                log::warn!("Failed to disable ptrace attachments: prctl returned {}", result);
             }
         }
     }
@@ -130,6 +148,150 @@ pub fn brute_force_state_path(vault_path: &Path) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("brute_force_state.json")
+}
+
+pub fn file_protection_config_path(vault_path: &Path) -> PathBuf {
+    vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(FILE_PROTECTION_CONFIG_FILE)
+}
+
+fn integrity_manifest_path(vault_path: &Path) -> PathBuf {
+    vault_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(FILE_PROTECTION_MANIFEST_FILE)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StartupIntegrityStatus {
+    pub supported: bool,
+    pub enabled: bool,
+    pub blocked: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct FileProtectionConfig {
+    #[serde(default)]
+    integrity_protection_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct UnsignedIntegrityManifest {
+    binary_sha256: String,
+    vault_sha256: Option<String>,
+    brute_force_state_sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SignedIntegrityManifest {
+    binary_sha256: String,
+    vault_sha256: Option<String>,
+    brute_force_state_sha256: Option<String>,
+    hmac: String,
+}
+
+impl From<UnsignedIntegrityManifest> for SignedIntegrityManifest {
+    fn from(value: UnsignedIntegrityManifest) -> Self {
+        SignedIntegrityManifest {
+            binary_sha256: value.binary_sha256,
+            vault_sha256: value.vault_sha256,
+            brute_force_state_sha256: value.brute_force_state_sha256,
+            hmac: String::new(),
+        }
+    }
+}
+
+impl From<&SignedIntegrityManifest> for UnsignedIntegrityManifest {
+    fn from(value: &SignedIntegrityManifest) -> Self {
+        UnsignedIntegrityManifest {
+            binary_sha256: value.binary_sha256.clone(),
+            vault_sha256: value.vault_sha256.clone(),
+            brute_force_state_sha256: value.brute_force_state_sha256.clone(),
+        }
+    }
+}
+
+pub fn file_protection_supported() -> bool {
+    cfg!(target_os = "linux")
+}
+
+pub fn startup_integrity_status(vault_path: &Path) -> StartupIntegrityStatus {
+    if !file_protection_supported() {
+        return StartupIntegrityStatus {
+            supported: false,
+            enabled: false,
+            blocked: false,
+            message: None,
+        };
+    }
+
+    match file_protection_enabled(vault_path) {
+        Ok(false) => StartupIntegrityStatus {
+            supported: true,
+            enabled: false,
+            blocked: false,
+            message: None,
+        },
+        Ok(true) => match verify_integrity_manifest(vault_path) {
+            Ok(()) => StartupIntegrityStatus {
+                supported: true,
+                enabled: true,
+                blocked: false,
+                message: None,
+            },
+            Err(_) => StartupIntegrityStatus {
+                supported: true,
+                enabled: true,
+                blocked: true,
+                message: Some(INTEGRITY_ALERT_MESSAGE.to_string()),
+            },
+        },
+        Err(_) => StartupIntegrityStatus {
+            supported: true,
+            enabled: true,
+            blocked: true,
+            message: Some(INTEGRITY_ALERT_MESSAGE.to_string()),
+        },
+    }
+}
+
+pub fn configure_file_protection(
+    vault_path: &Path,
+    enabled: bool,
+) -> VaultResult<StartupIntegrityStatus> {
+    if enabled && !file_protection_supported() {
+        return Err(VaultError::Validation(
+            "File protection is currently available on Linux only.".into(),
+        ));
+    }
+
+    save_file_protection_config(vault_path, enabled)?;
+    if enabled {
+        refresh_integrity_manifest(vault_path)?;
+    } else {
+        let _ = fs::remove_file(integrity_manifest_path(vault_path));
+    }
+
+    Ok(startup_integrity_status(vault_path))
+}
+
+pub fn refresh_integrity_manifest(vault_path: &Path) -> VaultResult<()> {
+    if !file_protection_supported() || !file_protection_enabled(vault_path)? {
+        return Ok(());
+    }
+
+    write_integrity_manifest(vault_path)
+}
+
+pub fn reset_integrity_manifest(vault_path: &Path) -> VaultResult<()> {
+    if !file_protection_supported() || !file_protection_enabled(vault_path)? {
+        return Ok(());
+    }
+
+    write_integrity_manifest(vault_path)
 }
 
 /// Legacy path used by older VaultGuard builds for persisted brute-force state.
@@ -414,6 +576,12 @@ impl BruteForceProtection {
             .map_err(|e| VaultError::Serialization(format!("Failed to serialize brute-force state: {}", e)))?;
         atomic_write(&self.state_path, json.as_bytes())?;
         set_file_permissions(&self.state_path, 0o600);
+        let vault_path = self
+            .state_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("vault.enc");
+        refresh_integrity_manifest(&vault_path)?;
         Ok(())
     }
 
@@ -538,6 +706,124 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> VaultResult<()> {
     Ok(())
 }
 
+fn load_file_protection_config(vault_path: &Path) -> VaultResult<FileProtectionConfig> {
+    let config_path = file_protection_config_path(vault_path);
+    if !config_path.exists() {
+        return Ok(FileProtectionConfig::default());
+    }
+
+    let content = fs::read_to_string(&config_path).map_err(|_| {
+        VaultError::IntegrityViolation("File protection config could not be read".into())
+    })?;
+    serde_json::from_str(&content).map_err(|_| {
+        VaultError::IntegrityViolation("File protection config is invalid".into())
+    })
+}
+
+fn save_file_protection_config(vault_path: &Path, enabled: bool) -> VaultResult<()> {
+    let config_path = file_protection_config_path(vault_path);
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+        set_file_permissions(parent, 0o700);
+    }
+
+    let config = FileProtectionConfig {
+        integrity_protection_enabled: enabled,
+    };
+    let json = serde_json::to_string_pretty(&config).map_err(|_| {
+        VaultError::Serialization("Failed to save file protection config".into())
+    })?;
+    atomic_write(&config_path, json.as_bytes())?;
+    set_file_permissions(&config_path, 0o600);
+    Ok(())
+}
+
+fn file_protection_enabled(vault_path: &Path) -> VaultResult<bool> {
+    Ok(load_file_protection_config(vault_path)?.integrity_protection_enabled)
+}
+
+fn write_integrity_manifest(vault_path: &Path) -> VaultResult<()> {
+    let manifest_path = integrity_manifest_path(vault_path);
+    if let Some(parent) = manifest_path.parent() {
+        fs::create_dir_all(parent)?;
+        set_file_permissions(parent, 0o700);
+    }
+
+    let machine_key = ensure_machine_key(&machine_id_path(vault_path))?;
+    let unsigned = build_integrity_manifest(vault_path)?;
+    let mut signed = SignedIntegrityManifest::from(unsigned.clone());
+    signed.hmac = compute_integrity_hmac(&unsigned, &machine_key)?;
+
+    let json = serde_json::to_string_pretty(&signed).map_err(|_| {
+        VaultError::Serialization("Failed to save file integrity manifest".into())
+    })?;
+    atomic_write(&manifest_path, json.as_bytes())?;
+    set_file_permissions(&manifest_path, 0o600);
+    Ok(())
+}
+
+fn verify_integrity_manifest(vault_path: &Path) -> VaultResult<()> {
+    let manifest_path = integrity_manifest_path(vault_path);
+    if !manifest_path.exists() {
+        return Err(VaultError::IntegrityViolation(
+            "Integrity manifest is missing".into(),
+        ));
+    }
+
+    let machine_key = load_machine_key(&machine_id_path(vault_path)).ok_or_else(|| {
+        VaultError::IntegrityViolation("Machine identity is missing".into())
+    })?;
+    let content = fs::read_to_string(&manifest_path).map_err(|_| {
+        VaultError::IntegrityViolation("Integrity manifest could not be read".into())
+    })?;
+    let signed: SignedIntegrityManifest = serde_json::from_str(&content).map_err(|_| {
+        VaultError::IntegrityViolation("Integrity manifest is invalid".into())
+    })?;
+    let unsigned = UnsignedIntegrityManifest::from(&signed);
+    let expected_hmac = compute_integrity_hmac(&unsigned, &machine_key)?;
+    if !constant_time_hex_eq(&signed.hmac, &expected_hmac) {
+        return Err(VaultError::IntegrityViolation(
+            "Integrity manifest signature mismatch".into(),
+        ));
+    }
+
+    let current = build_integrity_manifest(vault_path)?;
+    if current != unsigned {
+        return Err(VaultError::IntegrityViolation(
+            "Protected files changed outside VaultGuard".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn build_integrity_manifest(vault_path: &Path) -> VaultResult<UnsignedIntegrityManifest> {
+    let binary_path = std::env::current_exe().map_err(|_| {
+        VaultError::Io("Could not resolve the VaultGuard binary path".into())
+    })?;
+
+    Ok(UnsignedIntegrityManifest {
+        binary_sha256: sha256_file(&binary_path)?,
+        vault_sha256: optional_sha256_file(vault_path)?,
+        brute_force_state_sha256: optional_sha256_file(&brute_force_state_path(vault_path))?,
+    })
+}
+
+fn optional_sha256_file(path: &Path) -> VaultResult<Option<String>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    Ok(Some(sha256_file(path)?))
+}
+
+fn sha256_file(path: &Path) -> VaultResult<String> {
+    let bytes = fs::read(path).map_err(|_| {
+        VaultError::IntegrityViolation("Protected file could not be read".into())
+    })?;
+    Ok(hex_encode(&Sha256::digest(bytes)))
+}
+
 fn ensure_machine_key(machine_path: &Path) -> VaultResult<[u8; MACHINE_KEY_SIZE]> {
     if let Some(existing) = load_machine_key(machine_path) {
         return Ok(existing);
@@ -576,6 +862,18 @@ fn compute_state_hmac(
     mac.update(&json);
     let result = mac.finalize().into_bytes();
     Ok(hex_encode(&result))
+}
+
+fn compute_integrity_hmac(
+    unsigned: &UnsignedIntegrityManifest,
+    machine_key: &[u8; MACHINE_KEY_SIZE],
+) -> VaultResult<String> {
+    let json = serde_json::to_vec(unsigned)
+        .map_err(|_| VaultError::Serialization("Failed to encode integrity manifest".into()))?;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(machine_key)
+        .map_err(|_| VaultError::Crypto("Failed to initialize integrity HMAC".into()))?;
+    mac.update(&json);
+    Ok(hex_encode(&mac.finalize().into_bytes()))
 }
 
 fn constant_time_hex_eq(left: &str, right: &str) -> bool {

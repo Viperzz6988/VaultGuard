@@ -54,6 +54,10 @@ function requireSession(payload = {}) {
 }
 
 export const vaultApi = {
+  getStartupIntegrityStatus: () => command("get_startup_integrity_status"),
+  configureFileProtection: (enabled) =>
+    command("configure_file_protection", requireSession({ enabled })),
+  quitApp: () => command("quit_app"),
   checkVaultExists: () => command("check_vault_exists"),
   checkVaultUnlocked: () => command("check_vault_unlocked"),
   createVault: async (password) => {
@@ -74,8 +78,8 @@ export const vaultApi = {
     }
   },
   getBruteForceStatus: () => command("get_brute_force_status"),
-  getVaultFileStatus: () => command("get_vault_file_status"),
-  getEntries: () => command("get_entries"),
+  getVaultFileStatus: () => command("get_vault_file_status", requireSession()),
+  getEntries: () => command("get_entries", requireSession()),
   getEntry: (id) => command("get_entry", requireSession({ id })),
   createEntry: (input) => command("create_entry", requireSession({ input })),
   updateEntry: (id, input) => command("update_entry", requireSession({ id, input })),
@@ -92,7 +96,7 @@ export const vaultApi = {
   restoreEntry: (id) => command("restore_entry", requireSession({ id })),
   permanentDelete: (id) => command("permanent_delete", requireSession({ id })),
   getTrash: () => command("get_trash", requireSession()),
-  getCategories: () => command("get_categories"),
+  getCategories: () => command("get_categories", requireSession()),
   createCategory: (input) => command("create_category", requireSession({ input })),
   updateCategory: (id, input) => command("update_category", requireSession({ id, input })),
   reorderCategories: (orderedIds) => command("reorder_categories", requireSession({ orderedIds })),
@@ -106,10 +110,14 @@ export const vaultApi = {
     command("schedule_clipboard_clear", requireSession({ timeoutSecs })),
   clearClipboard: () => command("clear_clipboard"),
   openUrl: (url) => command("open_url", requireSession({ url })),
-  getSettings: () => command("get_settings"),
+  getSettings: () => command("get_settings", requireSession()),
   updateSettings: (input) => command("update_settings", requireSession({ input })),
   changeMasterPassword: (currentPassword, newPassword) =>
     command("change_master_password", requireSession({ currentPassword, newPassword })),
+  importVaultData: (filePath, format) =>
+    command("import_vault_data", requireSession({ filePath, format })),
+  exportVaultData: (filePath, format, masterPassword) =>
+    command("export_vault_data", requireSession({ filePath, format, masterPassword })),
   exportVaultJson: (password) => command("export_vault_json", requireSession({ password })),
   exportKeepassXml: (password) => command("export_keepass_xml", requireSession({ password })),
   exportBackup: () => command("export_backup", requireSession()),

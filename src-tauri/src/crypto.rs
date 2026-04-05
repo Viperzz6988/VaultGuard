@@ -272,6 +272,25 @@ pub struct StrengthResult {
     pub crack_time: String,
 }
 
+pub fn validate_master_password(password: &str) -> Result<(), String> {
+    if password.chars().count() < 15 {
+        return Err("At least 15 characters required.".into());
+    }
+    if !password.chars().any(|ch| ch.is_ascii_uppercase()) {
+        return Err("At least one uppercase letter required.".into());
+    }
+    if !password.chars().any(|ch| ch.is_ascii_lowercase()) {
+        return Err("At least one lowercase letter required.".into());
+    }
+    if !password.chars().any(|ch| ch.is_ascii_digit()) {
+        return Err("At least one number required.".into());
+    }
+    if !password.chars().any(|ch| ch.is_ascii_punctuation()) {
+        return Err("At least one special character required (!@#$%^&* etc).".into());
+    }
+    Ok(())
+}
+
 pub fn check_password_strength(password: &str) -> StrengthResult {
     if password.is_empty() {
         return StrengthResult {
@@ -344,10 +363,6 @@ pub fn check_password_strength(password: &str) -> StrengthResult {
         entropy_bits,
         crack_time: estimate_crack_time(entropy_bits),
     }
-}
-
-pub fn estimate_password_strength(password: &str) -> StrengthResult {
-    check_password_strength(password)
 }
 
 fn contains_keyboard_walk(password: &str) -> bool {
@@ -742,5 +757,17 @@ mod tests {
             "Keyboard walk should be weak/fair, got level {}",
             result.level
         );
+    }
+
+    #[test]
+    fn master_password_policy_rejects_weak_password() {
+        let result = validate_master_password("hello");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn master_password_policy_accepts_strong_password() {
+        let result = validate_master_password("VaultGuard!2026X");
+        assert!(result.is_ok());
     }
 }

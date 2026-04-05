@@ -249,7 +249,40 @@ function renderPasswordInput({
   `;
 }
 
+function masterPasswordChecklist(password, t) {
+  const characters = Array.from(password || "");
+  const checks = [
+    {
+      met: characters.length >= 15,
+      label: t("setup.requirements.length")
+    },
+    {
+      met: /[A-Z]/.test(password),
+      label: t("setup.requirements.uppercase")
+    },
+    {
+      met: /[a-z]/.test(password),
+      label: t("setup.requirements.lowercase")
+    },
+    {
+      met: /\d/.test(password),
+      label: t("setup.requirements.number")
+    },
+    {
+      met: /[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]/.test(password),
+      label: t("setup.requirements.special")
+    }
+  ];
+
+  return {
+    checks,
+    allMet: checks.every((check) => check.met)
+  };
+}
+
 function renderSetupScreen(state, t) {
+  const checklist = masterPasswordChecklist(state.forms.setup.password, t);
+
   return `
     <main class="screen screen-centered auth-screen">
       <section class="auth-card auth-card-minimal fade-in-up">
@@ -277,7 +310,20 @@ function renderSetupScreen(state, t) {
             toggleAction: "toggle-setup-confirm-password"
           })}
 
-          <button class="primary-button auth-submit-button" type="submit">
+          <ul class="password-checklist" aria-live="polite">
+            ${checklist.checks
+              .map(
+                (check) => `
+                  <li class="password-checklist-item ${check.met ? "is-met" : "is-unmet"}">
+                    <span aria-hidden="true">${check.met ? "✓" : "✗"}</span>
+                    <span>${escapeHtml(check.label)}</span>
+                  </li>
+                `
+              )
+              .join("")}
+          </ul>
+
+          <button class="primary-button auth-submit-button" type="submit" ${checklist.allMet ? "" : "disabled"}>
             ${escapeHtml(t("setup.createVault"))}
           </button>
 
@@ -289,6 +335,97 @@ function renderSetupScreen(state, t) {
             ${escapeHtml(t("setup.warningTail"))}
           </p>
         </form>
+      </section>
+    </main>
+  `;
+}
+
+function renderSetupWarningScreen(t) {
+  return `
+    <main class="screen screen-centered auth-screen">
+      <section class="auth-card auth-card-minimal onboarding-card fade-in-up">
+        <div class="onboarding-icon" aria-hidden="true">⚠</div>
+        <h1>${escapeHtml(t("setup.confirmationWarningTitle"))}</h1>
+        <p class="onboarding-copy">${escapeHtml(t("setup.confirmationWarningBody"))}</p>
+        <ul class="onboarding-list">
+          <li>${escapeHtml(t("setup.confirmationWarningLoss1"))}</li>
+          <li>${escapeHtml(t("setup.confirmationWarningLoss2"))}</li>
+          <li>${escapeHtml(t("setup.confirmationWarningLoss3"))}</li>
+        </ul>
+        <p class="onboarding-copy">${escapeHtml(t("setup.confirmationWarningFooter"))}</p>
+        <button class="primary-button auth-submit-button" type="button" data-action="acknowledge-master-password-warning">
+          ${escapeHtml(t("setup.confirmationWarningAction"))}
+        </button>
+      </section>
+    </main>
+  `;
+}
+
+function renderSetupReadyScreen(state, t) {
+  return `
+    <main class="screen screen-centered auth-screen">
+      <section class="auth-card auth-card-minimal onboarding-card fade-in-up">
+        <h1>${escapeHtml(t("setup.confirmationReadyTitle"))}</h1>
+        <label class="checkbox-row onboarding-checkbox">
+          <input
+            type="checkbox"
+            data-model="setupConfirmation.readyChecked"
+            ${state.forms.setupConfirmation.readyChecked ? "checked" : ""}
+          />
+          <span>${escapeHtml(t("setup.confirmationReadyCheckbox"))}</span>
+        </label>
+        <footer class="modal-actions onboarding-actions">
+          <button class="ghost-button" type="button" data-action="cancel-master-password-confirmation">
+            ${escapeHtml(t("common.cancel"))}
+          </button>
+          <button
+            class="primary-button"
+            type="button"
+            data-action="finish-master-password-confirmation"
+            ${state.forms.setupConfirmation.readyChecked ? "" : "disabled"}
+          >
+            ${escapeHtml(t("setup.confirmationReadyAction"))}
+          </button>
+        </footer>
+      </section>
+    </main>
+  `;
+}
+
+function renderSetupIntegrityScreen(t) {
+  return `
+    <main class="screen screen-centered auth-screen">
+      <section class="auth-card auth-card-minimal onboarding-card fade-in-up">
+        <div class="onboarding-icon" aria-hidden="true">🛡</div>
+        <h1>${escapeHtml(t("setup.integrityTitle"))}</h1>
+        <p class="onboarding-copy">${escapeHtml(t("setup.integrityBody"))}</p>
+        <p class="onboarding-copy">${escapeHtml(t("setup.integrityRecommendation"))}</p>
+        <footer class="modal-actions onboarding-actions">
+          <button class="ghost-button" type="button" data-action="skip-integrity-protection">
+            ${escapeHtml(t("setup.integritySkip"))}
+          </button>
+          <button class="primary-button" type="button" data-action="enable-integrity-protection">
+            ${escapeHtml(t("setup.integrityEnable"))}
+          </button>
+        </footer>
+      </section>
+    </main>
+  `;
+}
+
+function renderIntegrityAlertScreen(state, t) {
+  return `
+    <main class="screen screen-centered auth-screen">
+      <section class="auth-card auth-card-minimal onboarding-card fade-in-up">
+        <div class="onboarding-icon onboarding-icon-danger" aria-hidden="true">⛔</div>
+        <h1>${escapeHtml(t("security.integrityAlertTitle"))}</h1>
+        <p class="onboarding-copy">${escapeHtml(t("security.integrityAlertBody"))}</p>
+        <div class="onboarding-list onboarding-list-alert">
+          <p>${escapeHtml(state.ui.startupIntegrityAlert || t("security.integrityAlertBody"))}</p>
+        </div>
+        <button class="danger-button auth-submit-button" type="button" data-action="exit-app">
+          ${escapeHtml(t("security.integrityAlertExit"))}
+        </button>
       </section>
     </main>
   `;
@@ -898,6 +1035,9 @@ function renderModals(state, derived, t) {
   if (state.forms.changePassword.open) {
     modals.push(renderChangePasswordModal(state, t));
   }
+  if (state.forms.masterPasswordPrompt.open) {
+    modals.push(renderMasterPasswordPromptModal(state, t));
+  }
   if (state.forms.confirm.open) {
     modals.push(renderConfirmModal(state, t));
   }
@@ -1173,9 +1313,6 @@ function renderSettingsModal(state, derived, t) {
 }
 
 function renderImportSection(state, t) {
-  const preview = state.forms.import.preview;
-  const duplicateItems = preview?.duplicates?.slice(0, 5) || [];
-
   return `
     <section class="settings-data-section">
       <div class="section-heading">
@@ -1186,42 +1323,18 @@ function renderImportSection(state, t) {
         <select data-model="import.type">
           <option value="bitwarden" ${state.forms.import.type === "bitwarden" ? "selected" : ""}>${escapeHtml(t("import.types.bitwarden"))}</option>
           <option value="keepass" ${state.forms.import.type === "keepass" ? "selected" : ""}>${escapeHtml(t("import.types.keepass"))}</option>
-          <option value="onepassword" ${state.forms.import.type === "onepassword" ? "selected" : ""}>${escapeHtml(t("import.types.onepassword"))}</option>
+          <option value="1password" ${state.forms.import.type === "1password" ? "selected" : ""}>${escapeHtml(t("import.types.onepassword"))}</option>
           <option value="lastpass" ${state.forms.import.type === "lastpass" ? "selected" : ""}>${escapeHtml(t("import.types.lastpass"))}</option>
           <option value="dashlane" ${state.forms.import.type === "dashlane" ? "selected" : ""}>${escapeHtml(t("import.types.dashlane"))}</option>
-          <option value="genericCsv" ${state.forms.import.type === "genericCsv" ? "selected" : ""}>${escapeHtml(t("import.types.genericCsv"))}</option>
+          <option value="generic" ${state.forms.import.type === "generic" ? "selected" : ""}>${escapeHtml(t("import.types.genericCsv"))}</option>
         </select>
       </label>
-
-      <label class="field">
-        <span>${escapeHtml(t("settings.reenterPassword"))}</span>
-        <input type="password" value="${escapeHtml(state.forms.import.password)}" data-model="import.password" autocomplete="current-password" />
-      </label>
-
-      <input class="visually-hidden" id="import-file-input" type="file" data-action="choose-import-file" />
 
       <div class="settings-file-row">
         <button class="ghost-button settings-file-button" type="button" data-action="choose-import-file-trigger">
           ${escapeHtml(t("import.chooseFile"))}
         </button>
         <span class="subtle-text">${escapeHtml(state.forms.import.fileName || t("import.previewEmpty"))}</span>
-      </div>
-
-      <div class="preview-card data-preview-card">
-        ${
-          preview
-            ? `
-              <strong>${escapeHtml(preview.fileName)}</strong>
-              <p>${escapeHtml(t("messages.importFinished", { count: preview.count }))}</p>
-              <p>${escapeHtml(t("import.duplicates"))}: ${preview.duplicates.length}</p>
-              ${
-                duplicateItems.length
-                  ? `<ul class="preview-list">${duplicateItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
-                  : ""
-              }
-            `
-            : `<p class="subtle-text">${escapeHtml(t("import.previewEmpty"))}</p>`
-        }
       </div>
 
       <button class="primary-button data-action-button" type="button" data-action="run-import">${escapeHtml(t("import.importNow"))}</button>
@@ -1235,27 +1348,22 @@ function renderExportSection(state, t) {
       <div class="section-heading">
         <span>${escapeHtml(t("common.export"))}</span>
       </div>
-      <label class="field">
-        <span>${escapeHtml(t("settings.reenterPassword"))}</span>
-        <input type="password" value="${escapeHtml(state.forms.export.password)}" data-model="export.password" autocomplete="current-password" />
-      </label>
-
       <article class="export-card data-export-card">
         <h3>${escapeHtml(t("settings.exportBackup"))}</h3>
         <p>${escapeHtml(t("export.backupDescription"))}</p>
-        <button class="primary-button data-action-button" type="button" data-action="run-export" data-export-type="backup">${escapeHtml(t("settings.exportBackup"))}</button>
+        <button class="primary-button data-action-button" type="button" data-action="run-export" data-export-type="encrypted">${escapeHtml(t("settings.exportBackup"))}</button>
       </article>
 
       <article class="export-card data-export-card">
         <h3>${escapeHtml(t("settings.exportKeepassXml"))}</h3>
         <p>${escapeHtml(t("export.keepassDescription"))}</p>
-        <button class="ghost-button data-action-button" type="button" data-action="run-export" data-export-type="xml">${escapeHtml(t("settings.exportKeepassXml"))}</button>
+        <button class="ghost-button data-action-button" type="button" data-action="run-export" data-export-type="keepass">${escapeHtml(t("settings.exportKeepassXml"))}</button>
       </article>
 
       <article class="export-card data-export-card">
         <h3>${escapeHtml(t("settings.exportBitwardenJson"))}</h3>
         <p>${escapeHtml(t("export.bitwardenDescription"))}</p>
-        <button class="ghost-button data-action-button" type="button" data-action="run-export" data-export-type="json">${escapeHtml(t("settings.exportBitwardenJson"))}</button>
+        <button class="ghost-button data-action-button" type="button" data-action="run-export" data-export-type="bitwarden">${escapeHtml(t("settings.exportBitwardenJson"))}</button>
       </article>
     </section>
   `;
@@ -1300,6 +1408,33 @@ function renderChangePasswordModal(state, t) {
         <footer class="modal-actions">
           <button class="ghost-button" type="button" data-action="close-modal">${escapeHtml(t("common.cancel"))}</button>
           <button class="primary-button" type="submit">${escapeHtml(t("common.save"))}</button>
+        </footer>
+      </form>
+    `,
+    "change-password-card",
+    state.ui.modalClosing
+  );
+}
+
+function renderMasterPasswordPromptModal(state, t) {
+  return renderModalFrame(
+    t("settings.reenterPassword"),
+    `
+      <form class="stack-form" data-form="master-password-prompt">
+        <p>${escapeHtml(t("export.reauthDescription"))}</p>
+        <label class="field">
+          <span>${escapeHtml(t("common.password"))}</span>
+          <input
+            type="password"
+            autocomplete="current-password"
+            value="${escapeHtml(state.forms.masterPasswordPrompt.password)}"
+            data-model="masterPasswordPrompt.password"
+            required
+          />
+        </label>
+        <footer class="modal-actions">
+          <button class="ghost-button" type="button" data-action="close-modal">${escapeHtml(t("common.cancel"))}</button>
+          <button class="primary-button" type="submit">${escapeHtml(t("common.confirm"))}</button>
         </footer>
       </form>
     `,
@@ -1405,11 +1540,21 @@ export function renderApp({ state, derived, t }) {
     return `${renderPostLoginLoading(t)}${renderClipboardChoicePopup(state, t)}${renderToasts(state)}`;
   }
 
+  if (state.ui.startupIntegrityAlert) {
+    return `${renderIntegrityAlertScreen(state, t)}${renderClipboardChoicePopup(state, t)}${renderToasts(state)}`;
+  }
+
   const content = !state.vaultExists
     ? renderSetupScreen(state, t)
-    : !state.unlocked
-      ? renderUnlockScreen(state, t)
-      : renderVaultScreen(state, derived, t);
+    : state.forms.setupConfirmation.stage === "warning"
+      ? renderSetupWarningScreen(t)
+    : state.forms.setupConfirmation.stage === "confirm"
+      ? renderSetupReadyScreen(state, t)
+      : state.forms.setupConfirmation.stage === "integrity"
+        ? renderSetupIntegrityScreen(t)
+        : !state.unlocked
+          ? renderUnlockScreen(state, t)
+          : renderVaultScreen(state, derived, t);
 
   if (!state.unlocked && state.ui.startupIntro?.active) {
     return `${renderStartupIntro(content)}${renderClipboardChoicePopup(state, t)}${renderToasts(state)}`;
