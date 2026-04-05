@@ -143,7 +143,10 @@ fn load_vault_file(password: &str, path: &Path, make_read_only: bool) -> VaultRe
     }
 
     if !security::check_file_permissions(path) {
-        log::warn!("Vault file permissions are broader than owner-only access");
+        security::set_file_permissions(path, 0o600);
+        if !security::check_file_permissions(path) {
+            log::warn!("Vault file permissions are broader than owner-only access");
+        }
     }
 
     let file_data = fs::read(path)?;
