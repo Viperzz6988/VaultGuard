@@ -1,0 +1,81 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "VaultGuard",
+  "version": "0.1.0",
+  "identifier": "com.vaultguard.desktop",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "VaultGuard",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": true,
+        "theme": "Dark",
+        "backgroundColor": "#0f0f1a",
+        "devtools": false,
+        "center": true,
+        "label": "main"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; object-src 'none'; worker-src 'none'; child-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; object-src 'none'; worker-src 'none'; child-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "capabilities": [
+        {
+          "identifier": "default",
+          "description": "Capability for the main window",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "clipboard-manager:default",
+            "clipboard-manager:allow-write-text",
+            "opener:allow-default-urls"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "rpm", "appimage", "msi", "nsis"],
+    "publisher": "VaultGuard",
+    "category": "Utility",
+    "shortDescription": "Zero-knowledge local password manager.",
+    "longDescription": "VaultGuard is a local-first desktop password manager built with a Rust security boundary, encrypted JSON vault storage, progressive brute-force protection, and polished keyboard-first desktop workflows.",
+    "copyright": "Copyright (c) 2026 VaultGuard",
+    "fileAssociations": [
+      {
+        "ext": ["vgvault"],
+        "name": "VaultGuard Vault Package",
+        "description": "VaultGuard encrypted vault package",
+        "role": "Editor",
+        "mimeType": "application/x-vaultguard-vault"
+      },
+      {
+        "ext": ["vgbackup"],
+        "name": "VaultGuard Backup Package",
+        "description": "VaultGuard encrypted backup package",
+        "role": "Editor",
+        "mimeType": "application/x-vaultguard-backup"
+      }
+    ],
+    "icon": [
+      "icons/512x512.png",
+      "icons/256x256.png",
+      "icons/128x128.png",
+      "icons/64x64.png",
+      "icons/48x48.png",
+      "icons/32x32.png",
+      "icons/16x16.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+# Rust
+target/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & temp
+*.log
+*.tmp
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# AI artifacts
+CODEX_*
+codex_*
+.codex
+.aider*
