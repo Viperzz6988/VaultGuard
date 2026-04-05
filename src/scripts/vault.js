@@ -1,5 +1,13 @@
-const invoke = window.__TAURI__.core.invoke;
 let sessionToken = null;
+
+function getInvoke() {
+  const invoke = window.__TAURI__?.core?.invoke;
+  if (typeof invoke !== "function") {
+    throw new Error("VaultGuard could not reach the Tauri command bridge.");
+  }
+
+  return invoke;
+}
 
 function normalizeInvokeError(error) {
   if (typeof error === "string") {
@@ -28,7 +36,7 @@ function normalizeInvokeError(error) {
 
 async function command(name, payload = {}) {
   try {
-    return await invoke(name, payload);
+    return await getInvoke()(name, payload);
   } catch (error) {
     const normalized = normalizeInvokeError(error);
     const wrapped = new Error(normalized.message);

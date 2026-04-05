@@ -69,6 +69,7 @@
 html,
 body {
   margin: 0;
+  padding: 0;
   min-height: 100%;
 }
 
@@ -257,6 +258,33 @@ select {
 .stack-form {
   display: grid;
   gap: var(--space-4);
+}
+
+.startup-error {
+  display: grid;
+  gap: 12px;
+  max-width: 720px;
+  margin: 48px auto;
+  padding: 32px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-modal);
+}
+
+.startup-error h2 {
+  font-size: 1.25rem;
+}
+
+.startup-error p,
+.startup-error pre {
+  color: var(--text-secondary);
+}
+
+.startup-error pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .field {

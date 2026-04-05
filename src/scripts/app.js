@@ -15,9 +15,7 @@ import {
 } from "/scripts/ui.js";
 import { vaultApi } from "/scripts/vault.js";
 
-const { listen } = window.__TAURI__.event;
-
-const root = document.querySelector("#app");
+let root = null;
 const CUSTOM_CATEGORY_COLORS = [
   "#7c6fe0",
   "#4ca8e0",
@@ -32,6 +30,15 @@ const DEFAULT_CLIPBOARD_TIMEOUT_SECS = 300;
 const CLIPBOARD_CHOICE_DISMISS_SECS = 10;
 const COPY_FEEDBACK_DURATION_MS = 1500;
 const STARTUP_REVEAL_DELAY_MS = 200;
+const UNLOCK_SHAKE_RESET_MS = 350;
+const MODAL_CLOSE_DURATION_MS = 100;
+const TOAST_DURATION_MS = 3200;
+const SECURITY_POLL_INTERVAL_MS = 15_000;
+const CLIPBOARD_POPUP_WIDTH_PX = 360;
+const CLIPBOARD_POPUP_MARGIN_PX = 16;
+const CLIPBOARD_POPUP_OFFSET_PX = 12;
+const CLIPBOARD_POPUP_FALLBACK_Y_PX = 96;
+const CLIPBOARD_POPUP_MAX_TOP_PX = 170;
 let introPlayed = false;
 
 const state = {
@@ -158,9 +165,16 @@ let activeDropCard = null;
 
 const strengthDebouncers = new Map();
 
-document.addEventListener("DOMContentLoaded", initialize);
+export async function initializeApp() {
+  if (state.ready) {
+    return;
+  }
 
-async function initialize() {
+  root = document.querySelector("#app");
+  if (!root) {
+    throw new Error("VaultGuard root element was not found.");
+  }
+
   applyTheme(resolveInitialTheme());
   await initI18n("en");
   bindGlobalListeners();
@@ -191,6 +205,11 @@ function bindGlobalListeners() {
 }
 
 async function bindTauriListeners() {
+  const listen = window.__TAURI__?.event?.listen;
+  if (typeof listen !== "function") {
+    return;
+  }
+
   await listen("clipboard-countdown", (event) => {
     const timeout = event.payload?.timeout_secs ?? 0;
     if (!timeout) {
@@ -507,10 +526,6 @@ function patchEntryPanels() {
     detailPanel.classList.toggle("detail-open", Boolean(nextDerived.selectedRecord));
     detailPanel.innerHTML = renderDetailPanel(state, nextDerived, t, formatDateTime);
   }
-}
-
-function patchSecurityBanner() {
-  return;
 }
 
 function patchToastLayer() {
@@ -1360,7 +1375,7 @@ async function submitUnlock() {
     setTimeout(() => {
       state.ui.unlockShake = false;
       render();
-    }, 350);
+    }, UNLOCK_SHAKE_RESET_MS);
     state.bruteForceStatus = state.vaultExists ? await safeBruteForceStatus() : null;
     syncLockoutTicker();
     toast(error.message, "error");
@@ -1814,7 +1829,7 @@ function closeModal(immediate = false) {
     state.ui.modalClosing = false;
     clearModalState();
     render();
-  }, 100);
+  }, MODAL_CLOSE_DURATION_MS);
 }
 
 async function copySelectedField(field, actionTarget = null) {
@@ -1900,8 +1915,6 @@ function clearClipboardChoice() {
 }
 
 function resolveClipboardChoicePosition(actionTarget) {
-  const popupWidth = 360;
-  const margin = 16;
   const frameRect =
     document.querySelector(".app-frame")?.getBoundingClientRect() || {
       left: 0,
@@ -1909,20 +1922,37 @@ function resolveClipboardChoicePosition(actionTarget) {
     };
   if (!(actionTarget instanceof HTMLElement)) {
     return {
-      left: Math.max(margin, Math.round(window.innerWidth / 2 - popupWidth / 2) - frameRect.left),
-      top: Math.max(margin, Math.round(window.innerHeight / 2 - 96) - frameRect.top)
+      left:
+        Math.max(
+          CLIPBOARD_POPUP_MARGIN_PX,
+          Math.round(window.innerWidth / 2 - CLIPBOARD_POPUP_WIDTH_PX / 2)
+        ) - frameRect.left,
+      top:
+        Math.max(
+          CLIPBOARD_POPUP_MARGIN_PX,
+          Math.round(window.innerHeight / 2 - CLIPBOARD_POPUP_FALLBACK_Y_PX)
+        ) - frameRect.top
     };
   }
 
   const rect = actionTarget.getBoundingClientRect();
   const left = Math.max(
-    margin,
+    CLIPBOARD_POPUP_MARGIN_PX,
     Math.min(
-      Math.round(rect.left + rect.width / 2 - popupWidth / 2),
-      Math.max(margin, window.innerWidth - popupWidth - margin)
+      Math.round(rect.left + rect.width / 2 - CLIPBOARD_POPUP_WIDTH_PX / 2),
+      Math.max(
+        CLIPBOARD_POPUP_MARGIN_PX,
+        window.innerWidth - CLIPBOARD_POPUP_WIDTH_PX - CLIPBOARD_POPUP_MARGIN_PX
+      )
     )
   );
-  const top = Math.max(margin, Math.min(Math.round(rect.bottom + 12), window.innerHeight - 170));
+  const top = Math.max(
+    CLIPBOARD_POPUP_MARGIN_PX,
+    Math.min(
+      Math.round(rect.bottom + CLIPBOARD_POPUP_OFFSET_PX),
+      window.innerHeight - CLIPBOARD_POPUP_MAX_TOP_PX
+    )
+  );
   return { left: left - frameRect.left, top: top - frameRect.top };
 }
 
@@ -2136,17 +2166,31 @@ function flashCopiedState(button) {
   }
 
   const label = button.dataset.copiedLabel || t("common.copied");
-  const previous = button.innerHTML;
   if (button._copyFeedbackTimer) {
     clearTimeout(button._copyFeedbackTimer);
+    restoreCopiedState(button);
   }
-  button.innerHTML = `${label} ✓`;
+
+  button._copyFeedbackNodes = Array.from(button.childNodes).map((node) => node.cloneNode(true));
+  button.replaceChildren(document.createTextNode(`${label} ✓`));
   button.classList.add("is-copied");
   button._copyFeedbackTimer = setTimeout(() => {
-    button.innerHTML = previous;
-    button.classList.remove("is-copied");
-    button._copyFeedbackTimer = null;
+    restoreCopiedState(button);
   }, COPY_FEEDBACK_DURATION_MS);
+}
+
+function restoreCopiedState(button) {
+  if (!button) {
+    return;
+  }
+
+  if (Array.isArray(button._copyFeedbackNodes)) {
+    button.replaceChildren(...button._copyFeedbackNodes.map((node) => node.cloneNode(true)));
+  }
+
+  button.classList.remove("is-copied");
+  button._copyFeedbackNodes = null;
+  button._copyFeedbackTimer = null;
 }
 
 function previewImport(type, fileName, content) {
@@ -2375,11 +2419,10 @@ function scheduleSecurityPolling() {
         await performLock(t("messages.vaultModifiedLocked"));
         return;
       }
-      patchSecurityBanner();
     } catch {
       // The vault may already be locking; ignore transient polling failures.
     }
-  }, 15000);
+  }, SECURITY_POLL_INTERVAL_MS);
 }
 
 function clearSecurityPolling() {
@@ -2481,7 +2524,7 @@ function syncSettingsForm(settings, options = {}) {
     clipboard_remember_choice: Boolean(settings.clipboard_remember_choice),
     language: settings.language,
     theme: state.ui.theme,
-    expanded_section: options.expandedSection ?? state.forms.settings.expanded_section || "general"
+    expanded_section: (options.expandedSection ?? state.forms.settings.expanded_section) || "general"
   };
 }
 
@@ -2509,7 +2552,7 @@ function toast(message, tone = "info") {
   setTimeout(() => {
     state.toasts = state.toasts.slice(1);
     patchToastLayer();
-  }, 3200);
+  }, TOAST_DURATION_MS);
 }
 
 async function withHandledError(task, onError = null) {

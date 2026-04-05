@@ -1609,7 +1609,7 @@ fn is_valid_auto_lock(minutes: u32) -> bool {
 }
 
 fn is_valid_clipboard_timeout(seconds: u32) -> bool {
-    matches!(seconds, 30 | 60 | 120 | 300 | 600 | 1800)
+    matches!(seconds, 60 | 300 | 600 | 1800)
 }
 
 fn find_header_index(headers: &csv::StringRecord, names: &[&str]) -> Option<usize> {

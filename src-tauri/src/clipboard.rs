@@ -68,11 +68,6 @@ pub fn clear_clipboard(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn get_current_timer_id() -> u64 {
-    CLIPBOARD_TIMER_ID.load(Ordering::SeqCst)
-}
-
 #[derive(Clone, serde::Serialize)]
 struct ClipboardCountdown {
     timeout_secs: u64,

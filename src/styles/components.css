@@ -230,9 +230,7 @@
   margin: 3px 0;
 }
 
-.sidebar-header-btns,
-.sidebar-heading-actions,
-.sidebar-section-header-actions {
+.sidebar-header-btns {
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -1138,24 +1136,6 @@
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-}
-
-.field-label-with-info {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.info-dot {
-  display: inline-grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--accent);
-  font-size: 0.72rem;
-  font-weight: 700;
 }
 
 .settings-about {

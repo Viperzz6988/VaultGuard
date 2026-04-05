@@ -53,10 +53,6 @@ export function t(key, variables = {}) {
   });
 }
 
-export function optionLabel(key, optionKey) {
-  return t(`${key}.${optionKey}`);
-}
-
 export function formatDateTime(value) {
   if (!value) {
     return "—";

@@ -8,8 +8,6 @@ LOCAL_BIN_DIR="$HOME/.local/bin"
 LOCAL_APP_DIR="$HOME/.local/share/applications"
 LOCAL_ICON_ROOT="$HOME/.local/share/icons/hicolor"
 LOCAL_DESKTOP_FILE="$LOCAL_APP_DIR/vaultguard.desktop"
-APPIMAGE_DEST="$LOCAL_BIN_DIR/vaultguard.AppImage"
-APPIMAGE_LINK="$LOCAL_BIN_DIR/vaultguard"
 
 require_linux() {
   if [[ "$(uname -s)" != "Linux" ]]; then
@@ -107,22 +105,6 @@ install_binary_local() {
   return 0
 }
 
-install_appimage_local() {
-  local appimage="$1"
-  if [[ -z "$appimage" || ! -f "$appimage" ]]; then
-    return 1
-  fi
-
-  mkdir -p "$LOCAL_BIN_DIR"
-  cp "$appimage" "$APPIMAGE_DEST"
-  chmod +x "$APPIMAGE_DEST"
-  ln -sf "$APPIMAGE_DEST" "$APPIMAGE_LINK"
-  install_icons
-  write_local_desktop_file "$HOME/.local/bin/vaultguard"
-  refresh_desktop_caches
-  return 0
-}
-
 detect_distro() {
   if [[ -n "${VAULTGUARD_DISTRO_OVERRIDE:-}" ]]; then
     case "$VAULTGUARD_DISTRO_OVERRIDE" in
@@ -190,8 +172,6 @@ install_rpm() {
 
 install_arch() {
   local deb_bundle="$1"
-  local appimage_bundle="$2"
-
   if [[ -n "$deb_bundle" && -f "$deb_bundle" ]] && command -v debtap >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1; then
     local temp_dir package_path
     temp_dir="$(mktemp -d)"
@@ -208,10 +188,6 @@ install_arch() {
     rm -rf "$temp_dir"
   fi
 
-  if install_appimage_local "$appimage_bundle"; then
-    return 0
-  fi
-
   install_binary_local
 }
 
@@ -224,11 +200,10 @@ main() {
     exit 1
   fi
 
-  local distro deb_bundle rpm_bundle appimage_bundle
+  local distro deb_bundle rpm_bundle
   distro="$(detect_distro)"
   deb_bundle="$(find_latest "$BUNDLE_DIR/deb" 'vaultguard_*.deb')"
   rpm_bundle="$(find_latest "$BUNDLE_DIR/rpm" 'vaultguard-*.rpm')"
-  appimage_bundle="$(find_latest "$BUNDLE_DIR/appimage" '*.AppImage')"
 
   case "$distro" in
     debian)
@@ -247,7 +222,7 @@ main() {
       ;;
     arch)
       echo "Using Arch install path."
-      install_arch "$deb_bundle" "$appimage_bundle" || return 1
+      install_arch "$deb_bundle" || return 1
       ;;
     generic)
       echo "Using generic local install path."

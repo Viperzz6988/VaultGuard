@@ -614,10 +614,6 @@ function renderToolbar(state, derived, t) {
   `;
 }
 
-export function renderSecurityBanner() {
-  return "";
-}
-
 export function renderEntryList(state, derived, t) {
   if (state.view === "trash") {
     if (derived.trashEntries.length === 0) {

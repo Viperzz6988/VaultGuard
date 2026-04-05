@@ -36,7 +36,6 @@ pub fn disable_core_dumps() {
 }
 
 /// Lock a memory region to prevent it from being swapped to disk.
-#[allow(dead_code)]
 pub fn lock_memory(ptr: *const u8, len: usize) -> bool {
     #[cfg(unix)]
     {
@@ -62,7 +61,6 @@ pub fn lock_memory(ptr: *const u8, len: usize) -> bool {
 }
 
 /// Unlock a previously locked memory region.
-#[allow(dead_code)]
 pub fn unlock_memory(ptr: *const u8, len: usize) {
     #[cfg(unix)]
     {
