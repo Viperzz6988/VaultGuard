@@ -295,6 +295,8 @@ function render() {
     t,
     formatDateTime
   });
+  syncSetupPasswordChecklist();
+  syncSetupConfirmationButton();
 }
 
 function clearStartupTimers() {
@@ -591,6 +593,85 @@ function patchSettingsAccordion() {
 
 function patchClipboardState() {
   render();
+}
+
+function applyDisabledButtonState(button, enabled) {
+  if (!button) {
+    return;
+  }
+
+  button.disabled = !enabled;
+  button.style.opacity = enabled ? "1" : "0.4";
+  button.style.cursor = enabled ? "pointer" : "not-allowed";
+}
+
+function buildMasterPasswordChecks(password) {
+  const value = password || "";
+  return [
+    {
+      id: "check-length",
+      met: Array.from(value).length >= 15
+    },
+    {
+      id: "check-upper",
+      met: /[A-Z]/.test(value)
+    },
+    {
+      id: "check-lower",
+      met: /[a-z]/.test(value)
+    },
+    {
+      id: "check-digit",
+      met: /\d/.test(value)
+    },
+    {
+      id: "check-special",
+      met: /[^A-Za-z0-9]/.test(value)
+    }
+  ];
+}
+
+function syncSetupPasswordChecklist() {
+  const input = root.querySelector("#master-password-input");
+  const checklist = root.querySelector("#password-checklist");
+  const submitButton = root.querySelector("#create-vault-btn");
+  if (!input || !checklist || !submitButton) {
+    return;
+  }
+
+  if (state.forms.setup.password !== input.value) {
+    state.forms.setup.password = input.value;
+  }
+
+  const checks = buildMasterPasswordChecks(input.value);
+  const allMet = checks.every((check) => check.met);
+
+  checks.forEach(({ id, met }) => {
+    const item = checklist.querySelector(`[data-check="${id}"]`);
+    if (!item) {
+      return;
+    }
+
+    item.classList.toggle("is-met", met);
+    item.classList.toggle("is-unmet", !met);
+
+    const icon = item.querySelector(".password-checklist-icon");
+    if (icon) {
+      icon.textContent = met ? "✓" : "✗";
+    }
+  });
+
+  applyDisabledButtonState(submitButton, allMet);
+}
+
+function syncSetupConfirmationButton() {
+  const checkbox = root.querySelector("#confirm-checkbox");
+  const readyButton = root.querySelector("#confirm-ready-btn");
+  if (!checkbox || !readyButton) {
+    return;
+  }
+
+  applyDisabledButtonState(readyButton, checkbox.checked);
 }
 
 function formatClockCountdown(totalSeconds) {
@@ -1160,7 +1241,12 @@ function handleInput(event) {
   }
 
   if (model === "setup.password") {
+    syncSetupPasswordChecklist();
     scheduleStrengthUpdate("setup");
+    return;
+  }
+  if (model === "setup.confirmPassword") {
+    syncSetupPasswordChecklist();
     return;
   }
   if (model === "entry.password") {
@@ -1195,6 +1281,10 @@ async function handleChange(event) {
   const model = event.target.dataset.model;
   if (model && !event.target.dataset.action) {
     updateModel(model, getInputValue(event.target));
+    if (model === "setupConfirmation.readyChecked") {
+      syncSetupConfirmationButton();
+      return;
+    }
     if (model.startsWith("clipboardChoice.")) {
       render();
       return;

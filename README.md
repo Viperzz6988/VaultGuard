@@ -3,98 +3,102 @@
 
   # VaultGuard
 
-  **A fast, secure, local-first password manager.**  
+  A fast, secure, local-first password manager.
   Built with Tauri and Rust. Your vault never leaves your device.
 
   ![License](https://img.shields.io/badge/license-MIT-blue)
   ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey)
-  ![Build](https://img.shields.io/badge/build-passing-brightgreen)
 </div>
+
+---
+
+## Download
+
+**No installation of Rust required. Just download and run.**
+
+| Platform | File | |
+|---|---|---|
+| Linux (Debian/Ubuntu/Mint) | `VaultGuard_0.1.0_amd64.deb` | [Download →](https://github.com/Viperzz6988/VaultGuard/releases/latest) |
+| Linux (Fedora/RHEL) | `VaultGuard-0.1.0.x86_64.rpm` | [Download →](https://github.com/Viperzz6988/VaultGuard/releases/latest) |
+| Linux (any distro) | `VaultGuard_0.1.0_amd64.AppImage` | [Download →](https://github.com/Viperzz6988/VaultGuard/releases/latest) |
+| Windows | `VaultGuard_0.1.0_x64_en-US.msi` | [Download →](https://github.com/Viperzz6988/VaultGuard/releases/latest) |
+
+### Linux install
+
+```bash
+# Debian/Ubuntu/Mint:
+sudo dpkg -i VaultGuard_*.deb
+
+# Fedora/RHEL:
+sudo rpm -i VaultGuard-*.rpm
+
+# Any distro (AppImage — no install needed):
+chmod +x VaultGuard_*.AppImage
+./VaultGuard_*.AppImage
+
+# Arch Linux:
+# Install debtap first: sudo pacman -S debtap
+# Then: debtap VaultGuard_*.deb && sudo pacman -U *.pkg.tar.*
+```
+
+### Windows install
+
+Double-click the `.msi` file. VaultGuard will appear in your Start Menu.
 
 ---
 
 ## Features
 
 - 🔒 AES-256-GCM encrypted vault — Argon2id key derivation
-- 🚫 Zero cloud, zero accounts, zero telemetry — 100% local
-- 🔑 Master password only — if you forget it, the vault cannot be recovered
-- 🛡 Progressive lockout after failed attempts (12h → 24h → 1 week)
-- 📋 Smart clipboard with auto-clear and copy confirmation
-- 🗂 Categories: Login, API Keys, Other — plus custom categories
-- 🔍 Real-time search across title, username, and URL
-- 🎲 Password generator with accurate entropy-based strength meter
-- 📥 Import: Bitwarden JSON, KeePass XML, 1Password CSV, LastPass CSV, Dashlane CSV
+- 🚫 No cloud, no accounts, no telemetry — 100% local
+- 🔑 Strong master password enforcement (15+ chars, mixed case, numbers, symbols)
+- 🛡 Progressive brute-force lockout after failed attempts
+- 📋 Clipboard auto-clear with confirmation popup
+- 🗂 Categories: Login, API Keys, Other + custom categories
+- 🔍 Real-time search, password generator, strength meter
+- 📥 Import: Bitwarden JSON, KeePass XML, 1Password CSV, LastPass CSV
 - 📤 Export: Encrypted backup, KeePass XML, Bitwarden JSON
-- 🌙 Dark and light theme with system preference detection
-- 🌍 English and German language support
-- ⌨️ Full keyboard shortcut support
-
----
-
-## Installation
-
-### Linux (all distros)
-
-**Requirements:**
-- [Rust](https://rustup.rs) (installs `cargo` automatically)
-- `cargo-tauri`: install with `cargo install tauri-cli`
-- System dependencies for Tauri (WebKit2GTK):
-  - **Arch:** `sudo pacman -S webkit2gtk base-devel`
-  - **Debian/Ubuntu:** `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev`
-  - **Fedora:** `sudo dnf install webkit2gtk4.1-devel gtk3-devel`
-
-**Install:**
-```bash
-git clone https://github.com/Viperzz6988/VaultGuard
-cd VaultGuard
-./install.sh
-```
-
-The script detects your distro, builds VaultGuard, and installs it. VaultGuard will appear in your app launcher after installation.
-
-**Manual install if the script fails:**
-```bash
-cargo tauri build
-# Debian/Ubuntu:
-sudo dpkg -i src-tauri/target/release/bundle/deb/vaultguard_*.deb
-# Fedora/RHEL:
-sudo rpm -i src-tauri/target/release/bundle/rpm/vaultguard-*.rpm
-# Any distro (manual):
-cp src-tauri/target/release/vaultguard ~/.local/bin/
-```
-
----
-
-### Windows
-
-**Requirements:**
-- [Rust](https://rustup.rs) — run the installer, select the MSVC toolchain
-- [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) — install "Desktop development with C++"
-- `cargo-tauri`: open a terminal and run `cargo install tauri-cli`
-
-**Option 1 — Download installer (easiest):**  
-Go to [Releases](https://github.com/Viperzz6988/VaultGuard/releases) and download `vaultguard_setup.msi`.  
-Run it — VaultGuard will appear in your Start Menu.
-
-**Option 2 — Build from source:**
-```powershell
-git clone https://github.com/Viperzz6988/VaultGuard
-cd VaultGuard
-cargo tauri build
-```
-The `.msi` installer will be in `src-tauri\target\release\bundle\msi\`.
+- 🌙 Dark/light theme, English/German
 
 ---
 
 ## First Launch
 
 1. Open VaultGuard from your app launcher or Start Menu
-2. Create a **master password** — this is the only key to your vault
-   - ⚠️ This password is never stored anywhere
-   - ⚠️ If you forget it, your vault **cannot be recovered**
-3. Add your first entry with `Ctrl+N`
-4. Use the built-in generator for strong passwords
-5. Go to **Settings → Data** to import from another password manager
+2. Create a master password — it must have:
+   - At least 15 characters
+   - Uppercase + lowercase letters
+   - At least one number
+   - At least one special character (!@#$...)
+3. ⚠️ **This password is never stored anywhere.** If you forget it, your vault cannot be recovered.
+4. Add entries with `Ctrl+N`
+
+---
+
+## Build from source (optional)
+
+Only needed if you want to modify the code.
+
+**Requirements:** [Rust](https://rustup.rs) + `cargo install tauri-cli`
+
+**Linux system dependencies:**
+```bash
+# Debian/Ubuntu:
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+# Fedora:
+sudo dnf install webkit2gtk4.1-devel gtk3-devel
+
+# Arch:
+sudo pacman -S webkit2gtk base-devel
+```
+
+```bash
+git clone https://github.com/Viperzz6988/VaultGuard
+cd VaultGuard
+cargo tauri build
+./install.sh
+```
 
 ---
 
@@ -102,25 +106,22 @@ The `.msi` installer will be in `src-tauri\target\release\bundle\msi\`.
 
 | Shortcut | Action |
 |---|---|
-| `Ctrl + N` | New entry |
-| `Ctrl + L` | Lock vault |
-| `Ctrl + F` | Focus search |
-| `Ctrl + G` | Password generator |
-| `Escape` | Close modal / deselect |
-| `?` | Show all shortcuts |
+| `Ctrl+N` | New entry |
+| `Ctrl+L` | Lock vault |
+| `Ctrl+F` | Focus search |
+| `Ctrl+G` | Generator |
+| `Escape` | Close modal |
 
 ---
 
 ## Security
 
-VaultGuard uses:
-- **Argon2id** for key derivation (memory-hard, GPU/ASIC resistant, `m=65536 t=3 p=4`)
-- **AES-256-GCM** for vault encryption with random per-operation nonces
-- **HMAC-SHA256** for vault file integrity — any tampering is detected
-- **Progressive lockout** — 12h after 10 wrong attempts, 24h, then 1-week cycles
-- **Session tokens** — required for all sensitive operations, wiped on lock
-- **Memory protection** — keys stored in `Zeroizing` wrappers, wiped on drop
-- **Clipboard auto-clear** — configurable timeout, can be set per copy
+- Argon2id key derivation (`m=65536, t=3, p=4`) — memory-hard, GPU-resistant
+- AES-256-GCM encryption with random per-operation nonces
+- HMAC-SHA256 vault file integrity — tampering detected on every load
+- Session tokens required for all vault operations
+- Keys stored in `Zeroizing<>` — wiped from memory on lock
+- Clipboard auto-cleared on lock and app close
 
 ---
 

@@ -291,7 +291,7 @@ function renderSetupScreen(state, t) {
 
         <form class="stack-form" data-form="setup">
           ${renderPasswordInput({
-            inputId: "setup-password",
+            inputId: "master-password-input",
             placeholder: t("setup.masterPassword"),
             value: state.forms.setup.password,
             visible: Boolean(state.forms.setup.showPassword),
@@ -310,12 +310,15 @@ function renderSetupScreen(state, t) {
             toggleAction: "toggle-setup-confirm-password"
           })}
 
-          <ul class="password-checklist" aria-live="polite">
+          <ul class="password-checklist" id="password-checklist" aria-live="polite">
             ${checklist.checks
               .map(
-                (check) => `
-                  <li class="password-checklist-item ${check.met ? "is-met" : "is-unmet"}">
-                    <span aria-hidden="true">${check.met ? "✓" : "✗"}</span>
+                (check, index) => `
+                  <li
+                    class="password-checklist-item ${check.met ? "is-met" : "is-unmet"}"
+                    data-check="${["check-length", "check-upper", "check-lower", "check-digit", "check-special"][index]}"
+                  >
+                    <span class="password-checklist-icon" aria-hidden="true">${check.met ? "✓" : "✗"}</span>
                     <span>${escapeHtml(check.label)}</span>
                   </li>
                 `
@@ -323,7 +326,13 @@ function renderSetupScreen(state, t) {
               .join("")}
           </ul>
 
-          <button class="primary-button auth-submit-button" type="submit" ${checklist.allMet ? "" : "disabled"}>
+          <button
+            class="primary-button auth-submit-button"
+            id="create-vault-btn"
+            type="submit"
+            ${checklist.allMet ? "" : "disabled"}
+            style="opacity:${checklist.allMet ? "1" : "0.4"};cursor:${checklist.allMet ? "pointer" : "not-allowed"}"
+          >
             ${escapeHtml(t("setup.createVault"))}
           </button>
 
@@ -369,6 +378,7 @@ function renderSetupReadyScreen(state, t) {
         <label class="checkbox-row onboarding-checkbox">
           <input
             type="checkbox"
+            id="confirm-checkbox"
             data-model="setupConfirmation.readyChecked"
             ${state.forms.setupConfirmation.readyChecked ? "checked" : ""}
           />
@@ -380,9 +390,11 @@ function renderSetupReadyScreen(state, t) {
           </button>
           <button
             class="primary-button"
+            id="confirm-ready-btn"
             type="button"
             data-action="finish-master-password-confirmation"
             ${state.forms.setupConfirmation.readyChecked ? "" : "disabled"}
+            style="opacity:${state.forms.setupConfirmation.readyChecked ? "1" : "0.4"};cursor:${state.forms.setupConfirmation.readyChecked ? "pointer" : "not-allowed"}"
           >
             ${escapeHtml(t("setup.confirmationReadyAction"))}
           </button>
