@@ -5,7 +5,7 @@ import {
   emptyEntryDraft,
   normalizeGeneratorState
 } from "/scripts/generator.js";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "/scripts/tauri-dialog.js";
 import { formatDateTime, getLanguage, initI18n, setLanguage, t } from "/scripts/i18n.js";
 import { collectTags, filterEntries } from "/scripts/search.js";
 import {
